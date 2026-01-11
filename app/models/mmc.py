@@ -292,6 +292,8 @@ class MMcQueue(BaseQueueModel):
             else:
                 # Tous les serveurs occupés: attendre le premier disponible
                 t_service_start = heapq.heappop(servers)
+                # Ajouter l'événement de départ du serveur qui se libère
+                events.append((t_service_start, -1, 'departure'))
             
             # Calculer instant de départ
             t_departure = t_service_start + service_times[i]

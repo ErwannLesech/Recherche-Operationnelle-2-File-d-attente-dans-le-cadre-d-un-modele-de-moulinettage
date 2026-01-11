@@ -22,11 +22,14 @@ from pathlib import Path
 # Ajouter le chemin parent pour les imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from app.models import MM1Queue, MMcQueue, MMcKQueue, MD1Queue, MG1Queue
+from app.models import MM1Queue, MMcQueue, MMcKQueue, MD1Queue, MG1Queue, MDcQueue, MGcQueue
 from app.personas import PersonaFactory, StudentType
 from app.personas.usage_patterns import AcademicPeriod
 from app.simulation import RushSimulator, MoulinetteSystem, SimulationConfig, ServerConfig
 from app.optimization import CostOptimizer, ScalingAdvisor, CostModel, ScalingPolicy
+import json
+from datetime import datetime
+import os
 
 
 def run_app():
@@ -144,45 +147,107 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
     col1, col2 = st.columns([2, 1])
     
     with col2:
-        st.subheader("Sélection des modèles")
-        show_mm1 = st.checkbox("M/M/1", value=True)
-        show_mmc = st.checkbox("M/M/c", value=True)
-        show_mmck = st.checkbox("M/M/c/K", value=True)
-        show_md1 = st.checkbox("M/D/1", value=True)
-        show_mg1 = st.checkbox("M/G/1", value=True)
+        st.subheader("Selection des modeles")
+        st.markdown("**Modeles mono-serveur:**")
+        show_mm1 = st.checkbox("M/M/1", value=True, key="th_mm1")
+        show_md1 = st.checkbox("M/D/1", value=True, key="th_md1")
+        show_mg1 = st.checkbox("M/G/1", value=True, key="th_mg1")
+        
+        st.markdown("**Modeles multi-serveurs:**")
+        show_mmc = st.checkbox("M/M/c", value=True, key="th_mmc")
+        show_mdc = st.checkbox("M/D/c", value=True, key="th_mdc")
+        show_mgc = st.checkbox("M/G/c", value=True, key="th_mgc")
+        show_mmck = st.checkbox("M/M/c/K (capacite limitee)", value=False, key="th_mmck")
         
         cv_squared = st.slider(
-            "CV² service (pour M/G/1)",
-            min_value=0.0, max_value=2.0, value=1.0, step=0.1
+            "CV2 service (pour M/G/1 et M/G/c)",
+            min_value=0.0, max_value=2.0, value=1.0, step=0.1,
+            key="th_cv2"
         )
     
     with col1:
-        # Calculer les métriques pour chaque modèle
+        # Calculer les métriques théoriques pour chaque modèle
         models_data = []
+        service_mean = 1.0 / mu_rate
+        service_variance = cv_squared * (service_mean ** 2)
         
-        if show_mm1 and n_servers == 1 and lambda_rate < mu_rate:
+        # Modèles mono-serveur (condition: lambda < mu)
+        if show_mm1 and lambda_rate < mu_rate:
             queue = MM1Queue(lambda_rate, mu_rate)
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
-                'Modèle': 'M/M/1',
+                'Modele': 'M/M/1',
                 'L (clients)': metrics.L,
                 'Lq (en attente)': metrics.Lq,
                 'W (min)': metrics.W,
                 'Wq (min)': metrics.Wq,
-                'ρ': metrics.rho,
+                'rho': metrics.rho,
                 'P_blocage': 0.0
             })
         
+        if show_md1 and lambda_rate < mu_rate:
+            queue = MD1Queue(lambda_rate, mu_rate)
+            metrics = queue.compute_theoretical_metrics()
+            models_data.append({
+                'Modele': 'M/D/1',
+                'L (clients)': metrics.L,
+                'Lq (en attente)': metrics.Lq,
+                'W (min)': metrics.W,
+                'Wq (min)': metrics.Wq,
+                'rho': metrics.rho,
+                'P_blocage': 0.0
+            })
+        
+        if show_mg1 and lambda_rate < mu_rate:
+            queue = MG1Queue(lambda_rate, service_mean, service_variance)
+            metrics = queue.compute_theoretical_metrics()
+            models_data.append({
+                'Modele': f'M/G/1 (CV2={cv_squared})',
+                'L (clients)': metrics.L,
+                'Lq (en attente)': metrics.Lq,
+                'W (min)': metrics.W,
+                'Wq (min)': metrics.Wq,
+                'rho': metrics.rho,
+                'P_blocage': 0.0
+            })
+        
+        # Modèles multi-serveurs (condition: lambda < c*mu)
         if show_mmc and lambda_rate < n_servers * mu_rate:
             queue = MMcQueue(lambda_rate, mu_rate, n_servers)
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
-                'Modèle': f'M/M/{n_servers}',
+                'Modele': f'M/M/{n_servers}',
                 'L (clients)': metrics.L,
                 'Lq (en attente)': metrics.Lq,
                 'W (min)': metrics.W,
                 'Wq (min)': metrics.Wq,
-                'ρ': metrics.rho,
+                'rho': metrics.rho,
+                'P_blocage': 0.0
+            })
+        
+        if show_mdc and lambda_rate < n_servers * mu_rate:
+            queue = MDcQueue(lambda_rate, mu_rate, n_servers)
+            metrics = queue.compute_theoretical_metrics()
+            models_data.append({
+                'Modele': f'M/D/{n_servers}',
+                'L (clients)': metrics.L,
+                'Lq (en attente)': metrics.Lq,
+                'W (min)': metrics.W,
+                'Wq (min)': metrics.Wq,
+                'rho': metrics.rho,
+                'P_blocage': 0.0
+            })
+        
+        if show_mgc and lambda_rate < n_servers * mu_rate:
+            queue = MGcQueue(lambda_rate, service_mean, service_variance, n_servers)
+            metrics = queue.compute_theoretical_metrics()
+            models_data.append({
+                'Modele': f'M/G/{n_servers} (CV2={cv_squared})',
+                'L (clients)': metrics.L,
+                'Lq (en attente)': metrics.Lq,
+                'W (min)': metrics.W,
+                'Wq (min)': metrics.Wq,
+                'rho': metrics.rho,
                 'P_blocage': 0.0
             })
         
@@ -190,49 +255,24 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
             queue = MMcKQueue(lambda_rate, mu_rate, n_servers, buffer_size)
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
-                'Modèle': f'M/M/{n_servers}/{buffer_size}',
+                'Modele': f'M/M/{n_servers}/{buffer_size}',
                 'L (clients)': metrics.L,
                 'Lq (en attente)': metrics.Lq,
                 'W (min)': metrics.W,
                 'Wq (min)': metrics.Wq,
-                'ρ': metrics.rho,
+                'rho': metrics.rho,
                 'P_blocage': metrics.Pk
-            })
-        
-        if show_md1 and lambda_rate < mu_rate:
-            queue = MD1Queue(lambda_rate, mu_rate)
-            metrics = queue.compute_theoretical_metrics()
-            models_data.append({
-                'Modèle': 'M/D/1',
-                'L (clients)': metrics.L,
-                'Lq (en attente)': metrics.Lq,
-                'W (min)': metrics.W,
-                'Wq (min)': metrics.Wq,
-                'ρ': metrics.rho,
-                'P_blocage': 0.0
-            })
-        
-        if show_mg1 and lambda_rate < mu_rate:
-            queue = MG1Queue(lambda_rate, mu_rate, cv_squared)
-            metrics = queue.compute_theoretical_metrics()
-            models_data.append({
-                'Modèle': f'M/G/1 (CV²={cv_squared})',
-                'L (clients)': metrics.L,
-                'Lq (en attente)': metrics.Lq,
-                'W (min)': metrics.W,
-                'Wq (min)': metrics.Wq,
-                'ρ': metrics.rho,
-                'P_blocage': 0.0
             })
         
         if models_data:
             df = pd.DataFrame(models_data)
+            st.subheader("Metriques theoriques")
             st.dataframe(df.style.format({
                 'L (clients)': '{:.2f}',
                 'Lq (en attente)': '{:.2f}',
                 'W (min)': '{:.3f}',
                 'Wq (min)': '{:.3f}',
-                'ρ': '{:.2%}',
+                'rho': '{:.2%}',
                 'P_blocage': '{:.4%}'
             }), use_container_width=True)
             
@@ -240,11 +280,11 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
             fig = make_subplots(rows=1, cols=2, subplot_titles=['Temps d\'attente (Wq)', 'Longueur de queue (Lq)'])
             
             fig.add_trace(
-                go.Bar(x=df['Modèle'], y=df['Wq (min)'], name='Wq'),
+                go.Bar(x=df['Modele'], y=df['Wq (min)'], name='Wq'),
                 row=1, col=1
             )
             fig.add_trace(
-                go.Bar(x=df['Modèle'], y=df['Lq (en attente)'], name='Lq'),
+                go.Bar(x=df['Modele'], y=df['Lq (en attente)'], name='Lq'),
                 row=1, col=2
             )
             
@@ -253,74 +293,282 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
         else:
             st.warning("Aucun modele selectionne ou parametres invalides (systeme instable)")
     
-    # Section simulation
-    st.subheader("Simulation Monte Carlo")
+    # ==========================================
+    # SECTION SIMULATION MONTE CARLO COMPARATIVE
+    # ==========================================
+    st.divider()
+    st.subheader("Simulation Monte Carlo - Comparaison de tous les modeles")
     
-    col1, col2 = st.columns([1, 3])
+    col1, col2, col3 = st.columns([1, 1, 2])
     
     with col1:
-        sim_duration = st.number_input("Durée simulation (min)", 10, 1000, 60)
-        selected_model = st.selectbox("Modèle à simuler", ['M/M/1', 'M/M/c', 'M/M/c/K', 'M/D/1', 'M/G/1'])
-        run_sim = st.button("Lancer simulation")
+        sim_n_customers = st.number_input("Nombre de clients", 100, 50000, 2000, step=100, key="sim_n_customers")
+        n_runs = st.number_input("Nombre de runs", 1, 50, 3, key="sim_n_runs")
+        save_simulation = st.checkbox("Sauvegarder les resultats", value=True, key="sim_save")
     
     with col2:
-        if run_sim:
-            with st.spinner("Simulation en cours..."):
-                queue = None
-                error_msg = None
+        st.markdown("**Modeles a simuler:**")
+        sim_mm1 = st.checkbox("M/M/1", value=True, key="sim_mm1")
+        sim_md1 = st.checkbox("M/D/1", value=True, key="sim_md1")
+        sim_mg1 = st.checkbox("M/G/1", value=True, key="sim_mg1")
+        sim_mmc = st.checkbox("M/M/c", value=True, key="sim_mmc")
+        sim_mdc = st.checkbox("M/D/c", value=True, key="sim_mdc")
+        sim_mgc = st.checkbox("M/G/c", value=True, key="sim_mgc")
+    
+    with col3:
+        run_sim = st.button("Lancer simulation comparative", key="run_sim_compare", type="primary")
+        st.markdown("""
+        **Note:** Les systemes instables (queue croissante) 
+        seront simules normalement sur un nombre fini de clients.
+        """)
+    
+    # Résultats en pleine largeur (en dehors des colonnes)
+    if run_sim:
+        with st.spinner("Simulation de tous les modeles en cours..."):
+            simulation_results = []
+            temporal_data = {}  # Pour les graphiques temporels
+            service_mean = 1.0 / mu_rate
+            service_variance = cv_squared * (service_mean ** 2)
+            
+            # Configuration des modèles à simuler (tous les modèles cochés, sans restriction)
+            models_config = []
+            
+            # Modèles mono-serveur (lancés sans condition)
+            if sim_mm1:
+                models_config.append(('M/M/1', MM1Queue(lambda_rate, mu_rate), lambda_rate < mu_rate))
+            
+            if sim_md1:
+                models_config.append(('M/D/1', MD1Queue(lambda_rate, mu_rate), lambda_rate < mu_rate))
+            
+            if sim_mg1:
+                models_config.append(('M/G/1', MG1Queue(lambda_rate, service_mean, service_variance), lambda_rate < mu_rate))
+            
+            # Modèles multi-serveurs (lancés sans condition)
+            if sim_mmc:
+                models_config.append((f'M/M/{n_servers}', MMcQueue(lambda_rate, mu_rate, n_servers), lambda_rate < n_servers * mu_rate))
+            
+            if sim_mdc:
+                models_config.append((f'M/D/{n_servers}', MDcQueue(lambda_rate, mu_rate, n_servers), lambda_rate < n_servers * mu_rate))
+            
+            if sim_mgc:
+                models_config.append((f'M/G/{n_servers}', MGcQueue(lambda_rate, service_mean, service_variance, n_servers), lambda_rate < n_servers * mu_rate))
+            
+            # Afficher les avertissements pour les systèmes instables
+            unstable_models = [name for name, _, is_stable in models_config if not is_stable]
+            if unstable_models:
+                st.info(f"Systemes instables (rho >= 1): {', '.join(unstable_models)} - La queue va croitre")
+            
+            if not models_config:
+                st.error("Aucun modele selectionne.")
+            else:
+                progress_bar = st.progress(0)
+                total_sims = len(models_config) * n_runs
+                current_sim = 0
                 
-                if selected_model == 'M/M/1':
-                    if n_servers != 1:
-                        error_msg = "M/M/1 necessite exactement 1 serveur"
-                    elif lambda_rate >= mu_rate:
-                        error_msg = f"Systeme instable: lambda ({lambda_rate}) >= mu ({mu_rate})"
-                    else:
-                        queue = MM1Queue(lambda_rate, mu_rate)
-                elif selected_model == 'M/M/c':
-                    if lambda_rate >= n_servers * mu_rate:
-                        error_msg = f"Systeme instable: lambda ({lambda_rate}) >= c*mu ({n_servers * mu_rate})"
-                    else:
-                        queue = MMcQueue(lambda_rate, mu_rate, n_servers)
-                elif selected_model == 'M/M/c/K':
-                    queue = MMcKQueue(lambda_rate, mu_rate, n_servers, buffer_size)
-                elif selected_model == 'M/D/1':
-                    if lambda_rate >= mu_rate:
-                        error_msg = f"Systeme instable: lambda ({lambda_rate}) >= mu ({mu_rate})"
-                    else:
-                        queue = MD1Queue(lambda_rate, mu_rate)
-                elif selected_model == 'M/G/1':
-                    if lambda_rate >= mu_rate:
-                        error_msg = f"Systeme instable: lambda ({lambda_rate}) >= mu ({mu_rate})"
-                    else:
-                        queue = MG1Queue(lambda_rate, mu_rate, cv_squared)
+                for model_name, queue, is_stable in models_config:
+                    temporal_data[model_name] = {'times': [], 'queue_lengths': [], 'waiting_times': [], 'arrival_times': []}
+                    
+                    for run in range(n_runs):
+                        try:
+                            result = queue.simulate(n_customers=sim_n_customers)
+                            
+                            if len(result.system_times) > 0:
+                                simulation_results.append({
+                                    'Modele': model_name,
+                                    'Run': run + 1,
+                                    'Clients servis': result.n_served,
+                                    'Temps systeme (min)': float(np.mean(result.system_times)),
+                                    'Temps attente (min)': float(np.mean(result.waiting_times)),
+                                    'Longueur max queue': int(np.max(result.queue_length_trace)) if len(result.queue_length_trace) > 0 else 0,
+                                    'Longueur moy queue': float(np.mean(result.queue_length_trace)) if len(result.queue_length_trace) > 0 else 0,
+                                    'Taux rejet (%)': 100 * result.n_rejected / result.n_arrivals if result.n_arrivals > 0 else 0,
+                                    'Stable': 'Oui' if is_stable else 'Non'
+                                })
+                                
+                                # Stocker les données temporelles (dernier run uniquement)
+                                if run == n_runs - 1:
+                                    # Sous-échantillonner pour éviter trop de points, mais garder le dernier point
+                                    step = max(1, len(result.time_trace) // 500)
+                                    
+                                    # Queue lengths avec dernier point
+                                    ql = result.queue_length_trace[::step].tolist()
+                                    if len(result.queue_length_trace) > 0 and result.queue_length_trace[-1] not in ql[-1:]:
+                                        ql.append(float(result.queue_length_trace[-1]))
+                                    temporal_data[model_name]['queue_lengths'] = ql
+                                    
+                                    # Times avec dernier point
+                                    times = result.time_trace[::step].tolist() if len(result.time_trace) > 0 else []
+                                    if len(result.time_trace) > 0 and result.time_trace[-1] not in times[-1:]:
+                                        times.append(float(result.time_trace[-1]))
+                                    temporal_data[model_name]['times'] = times
+                                    
+                                    # Waiting times et arrival times
+                                    temporal_data[model_name]['waiting_times'] = result.waiting_times[::step].tolist() if len(result.waiting_times) > step else result.waiting_times.tolist()
+                                    temporal_data[model_name]['arrival_times'] = result.arrival_times[::step].tolist() if len(result.arrival_times) > step else result.arrival_times.tolist()
+                        except Exception as e:
+                            st.warning(f"{model_name} Run {run+1}: {str(e)}")
+                        
+                        current_sim += 1
+                        progress_bar.progress(current_sim / total_sims)
                 
-                if error_msg:
-                    st.error(error_msg)
-                elif queue:
-                    result = queue.simulate(sim_duration)
+                progress_bar.empty()
+                
+                # Affichage des résultats
+                if simulation_results:
+                    df_sim = pd.DataFrame(simulation_results)
                     
-                    # Calculer les métriques depuis les données brutes
-                    n_served = result.n_served
-                    avg_system_time = float(np.mean(result.system_times)) if len(result.system_times) > 0 else 0.0
-                    avg_waiting_time = float(np.mean(result.waiting_times)) if len(result.waiting_times) > 0 else 0.0
-                    max_queue_len = int(np.max(result.queue_length_trace)) if len(result.queue_length_trace) > 0 else 0
+                    # Résumé statistique
+                    st.markdown("### Resume statistique (moyenne +/- ecart-type)")
+                    summary = df_sim.groupby('Modele').agg({
+                        'Clients servis': ['mean', 'std'],
+                        'Temps systeme (min)': ['mean', 'std'],
+                        'Temps attente (min)': ['mean', 'std'],
+                        'Longueur moy queue': ['mean', 'std'],
+                        'Taux rejet (%)': ['mean', 'std']
+                    }).round(3)
                     
-                    col_a, col_b, col_c, col_d = st.columns(4)
-                    col_a.metric("Clients traites", n_served)
-                    col_b.metric("Temps moyen systeme", f"{avg_system_time:.2f} min")
-                    col_c.metric("Temps moyen attente", f"{avg_waiting_time:.2f} min")
-                    col_d.metric("Longueur max queue", max_queue_len)
+                    summary_display = pd.DataFrame()
+                    for col in ['Clients servis', 'Temps systeme (min)', 'Temps attente (min)', 'Longueur moy queue', 'Taux rejet (%)']:
+                        mean_vals = summary[col]['mean'].fillna(0)
+                        std_vals = summary[col]['std'].fillna(0)
+                        summary_display[col] = mean_vals.astype(str) + ' +/- ' + std_vals.astype(str)
                     
-                    # Graphique de l'évolution
-                    if len(result.time_trace) > 0 and len(result.queue_length_trace) > 0:
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(x=result.time_trace, y=result.queue_length_trace, mode='lines', name='Queue'))
-                        fig.update_layout(
-                            title='Evolution de la longueur de queue',
-                            xaxis_title='Temps (min)',
-                            yaxis_title='Clients en attente'
+                    st.dataframe(summary_display, use_container_width=True)
+                    
+                    # Espacement vertical
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    
+                    # ==========================================
+                    # GRAPHIQUES TEMPORELS COMPARATIFS
+                    # ==========================================
+                    st.markdown("### Evolution temporelle comparee")
+                    
+                    # Couleurs distinctes pour chaque modèle
+                    colors = px.colors.qualitative.Set1
+                    color_map = {name: colors[i % len(colors)] for i, name in enumerate(temporal_data.keys())}
+                    
+                    # Graphique longueur de queue dans le temps
+                    fig_temporal = make_subplots(
+                        rows=2, cols=1,
+                        subplot_titles=['Longueur de queue au cours du temps', 'Temps d\'attente au cours du temps'],
+                        vertical_spacing=0.18
+                    )
+                    
+                    for model_name, data in temporal_data.items():
+                        if data['queue_lengths'] and data['times']:
+                            fig_temporal.add_trace(
+                                go.Scatter(
+                                    x=data['times'],
+                                    y=data['queue_lengths'],
+                                    mode='lines',
+                                    name=model_name,
+                                    line=dict(color=color_map[model_name]),
+                                    legendgroup=model_name
+                                ),
+                                row=1, col=1
+                            )
+                        
+                        if data['waiting_times'] and data.get('arrival_times'):
+                            fig_temporal.add_trace(
+                                go.Scatter(
+                                    x=data['arrival_times'],
+                                    y=data['waiting_times'],
+                                    mode='lines',
+                                    name=model_name,
+                                    line=dict(color=color_map[model_name]),
+                                    legendgroup=model_name,
+                                    showlegend=False
+                                ),
+                                row=2, col=1
+                            )
+                    
+                    fig_temporal.update_xaxes(title_text="Temps de simulation (min)", row=1, col=1)
+                    fig_temporal.update_xaxes(title_text="Temps de simulation (min)", row=2, col=1)
+                    fig_temporal.update_yaxes(title_text="Clients en queue", row=1, col=1)
+                    fig_temporal.update_yaxes(title_text="Temps attente (min)", row=2, col=1)
+                    fig_temporal.update_layout(
+                        height=800, 
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        margin=dict(t=80, b=40)
+                    )
+                    
+                    st.plotly_chart(fig_temporal, use_container_width=True)
+                    
+                    # Espacement vertical
+                    st.markdown("<br><br>", unsafe_allow_html=True)
+                    
+                    # Box plots de comparaison
+                    st.markdown("### Distribution des metriques")
+                    
+                    fig_box = make_subplots(
+                        rows=1, cols=3,
+                        subplot_titles=['Temps attente (min)', 'Temps systeme (min)', 'Longueur moy queue']
+                    )
+                    
+                    for model in df_sim['Modele'].unique():
+                        model_data = df_sim[df_sim['Modele'] == model]
+                        color = color_map.get(model, '#1f77b4')
+                        
+                        fig_box.add_trace(
+                            go.Box(y=model_data['Temps attente (min)'], name=model, marker_color=color, showlegend=True),
+                            row=1, col=1
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        fig_box.add_trace(
+                            go.Box(y=model_data['Temps systeme (min)'], name=model, marker_color=color, showlegend=False),
+                            row=1, col=2
+                        )
+                        fig_box.add_trace(
+                            go.Box(y=model_data['Longueur moy queue'], name=model, marker_color=color, showlegend=False),
+                            row=1, col=3
+                        )
+                    
+                    fig_box.update_layout(height=450, margin=dict(t=40, b=40))
+                    st.plotly_chart(fig_box, use_container_width=True)
+                    
+                    # Espacement vertical
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    
+                    # Sauvegarde des résultats
+                    if save_simulation:
+                        sim_dir = Path(__file__).parent.parent.parent / 'simulations'
+                        sim_dir.mkdir(exist_ok=True)
+                        
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"simulation_{timestamp}.json"
+                        filepath = sim_dir / filename
+                        
+                        save_data = {
+                            'timestamp': timestamp,
+                            'parameters': {
+                                'lambda_rate': lambda_rate,
+                                'mu_rate': mu_rate,
+                                'n_servers': n_servers,
+                                'cv_squared': cv_squared,
+                                'n_customers': sim_n_customers,
+                                'n_runs': n_runs
+                            },
+                            'results': simulation_results,
+                            'summary': {
+                                model: {
+                                    'mean_wait': float(df_sim[df_sim['Modele'] == model]['Temps attente (min)'].mean()),
+                                    'std_wait': float(df_sim[df_sim['Modele'] == model]['Temps attente (min)'].std()),
+                                    'mean_system': float(df_sim[df_sim['Modele'] == model]['Temps systeme (min)'].mean()),
+                                    'mean_queue_length': float(df_sim[df_sim['Modele'] == model]['Longueur moy queue'].mean())
+                                }
+                                for model in df_sim['Modele'].unique()
+                            }
+                        }
+                        
+                        with open(filepath, 'w', encoding='utf-8') as f:
+                            json.dump(save_data, f, indent=2, ensure_ascii=False)
+                        
+                        st.success(f"Simulation sauvegardee: {filepath}")
+                    
+                    # Tableau détaillé
+                    with st.expander("Voir les resultats detailles de tous les runs"):
+                        st.dataframe(df_sim, use_container_width=True)
+                else:
+                    st.error("Aucune simulation valide. Verifiez les parametres et conditions de stabilite.")
 
 
 def render_personas_tab():

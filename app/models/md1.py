@@ -63,7 +63,8 @@ class MD1Queue(BaseQueueModel):
         self,
         lambda_rate: float,
         mu_rate: float,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        allow_unstable: bool = True
     ):
         """
         Initialise une file M/D/1.
@@ -72,13 +73,12 @@ class MD1Queue(BaseQueueModel):
             lambda_rate: Taux d'arrivée λ
             mu_rate: Taux de service μ (temps de service = 1/μ)
             seed: Graine aléatoire (pour les arrivées)
-            
-        Raises:
-            ValueError: Si ρ = λ/μ ≥ 1
+            allow_unstable: Si True, permet les systèmes instables
         """
         super().__init__(lambda_rate, mu_rate, c=1, K=None, seed=seed)
+        self.allow_unstable = allow_unstable
         
-        if not self.is_stable:
+        if not self.is_stable and not allow_unstable:
             raise ValueError(
                 f"Système instable: ρ = {self.rho:.4f} ≥ 1"
             )

@@ -5,6 +5,8 @@ from .mmc import MMcQueue
 from .mmck import MMcKQueue
 from .md1 import MD1Queue
 from .mg1 import MG1Queue
+from .mdc import MDcQueue
+from .mgc import MGcQueue
 
 __all__ = [
     'BaseQueueModel',
@@ -12,5 +14,7 @@ __all__ = [
     'MMcQueue', 
     'MMcKQueue',
     'MD1Queue',
-    'MG1Queue'
+    'MG1Queue',
+    'MDcQueue',
+    'MGcQueue'
 ]

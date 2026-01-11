@@ -56,7 +56,8 @@ class MM1Queue(BaseQueueModel):
         self,
         lambda_rate: float,
         mu_rate: float,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        allow_unstable: bool = True
     ):
         """
         Initialise une file M/M/1.
@@ -65,13 +66,12 @@ class MM1Queue(BaseQueueModel):
             lambda_rate: Taux d'arrivée λ (soumissions/heure)
             mu_rate: Taux de service μ (corrections/heure)
             seed: Graine aléatoire pour reproductibilité
-            
-        Raises:
-            ValueError: Si ρ = λ/μ ≥ 1 (système instable)
+            allow_unstable: Si True, permet les systèmes instables (simulation uniquement)
         """
         super().__init__(lambda_rate, mu_rate, c=1, K=None, seed=seed)
+        self.allow_unstable = allow_unstable
         
-        if not self.is_stable:
+        if not self.is_stable and not allow_unstable:
             raise ValueError(
                 f"Système instable: ρ = {self.rho:.4f} ≥ 1. "
                 f"Le taux d'arrivée λ={lambda_rate} doit être < μ={mu_rate}"

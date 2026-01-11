@@ -88,7 +88,8 @@ class MG1Queue(BaseQueueModel):
         service_variance: float = None,
         distribution: ServiceDistribution = ServiceDistribution.EXPONENTIAL,
         distribution_params: dict = None,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        allow_unstable: bool = True
     ):
         """
         Initialise une file M/G/1.
@@ -100,6 +101,7 @@ class MG1Queue(BaseQueueModel):
             distribution: Type de distribution de service
             distribution_params: Paramètres additionnels pour la distribution
             seed: Graine aléatoire
+            allow_unstable: Si True, permet les systèmes instables
         """
         # Calculer μ depuis la moyenne
         mu_rate = 1 / service_mean
@@ -109,6 +111,7 @@ class MG1Queue(BaseQueueModel):
         self.service_mean = service_mean
         self.distribution = distribution
         self.distribution_params = distribution_params or {}
+        self.allow_unstable = allow_unstable
         
         # Calculer ou définir la variance
         if service_variance is None:
@@ -119,7 +122,7 @@ class MG1Queue(BaseQueueModel):
         # Coefficient de variation au carré
         self.C_squared = self.service_variance / (service_mean ** 2)
         
-        if not self.is_stable:
+        if not self.is_stable and not allow_unstable:
             raise ValueError(
                 f"Système instable: ρ = {self.rho:.4f} ≥ 1"
             )
