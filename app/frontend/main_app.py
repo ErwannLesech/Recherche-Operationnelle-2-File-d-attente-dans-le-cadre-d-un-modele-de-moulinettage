@@ -668,38 +668,86 @@ def render_personas_tab():
 
 
 def render_rush_simulation_tab(mu_rate, buffer_size):
-    """Onglet de simulation de rush."""
+    import streamlit as st
+    import plotly.graph_objects as go
+    import numpy as np
+
     st.header("Simulation Rush")
 
-    # Configuration par défaut pour ChainQueue
-    lambda_rate = 30.0  # Taux d'arrivée par défaut
-    n_servers_mmc = 4   # Nombre de serveurs pour MMC
-    n_servers_mm1 = 1   # Nombre de serveurs pour MM1
+    # --- Configuration système ---
+    moulinette = MoulinetteSystem()
+    moulinette.configure(n_servers=4, buffer_size=buffer_size, service_rate=mu_rate)
 
-    # Créer une chaîne de queues MMC -> MM1
-    chain_queue = ChainQueue([
-        GenericQueue(lambda_rate, mu_rate, "M/M/C"),
-        GenericQueue(lambda_rate, mu_rate, "M/M/1")
-    ])
+    # Optionnel : configurer une chaîne de queues personnalisée (2 queues)
+    # Par défaut ChainQueue a déjà 2 queues, sinon :
+    # from app.models.base_queue import GenericQueue
+    # queue1 = GenericQueue(lambda_rate=1, mu_rate=mu_rate, c=2)
+    # queue2 = GenericQueue(lambda_rate=1, mu_rate=mu_rate, c=2)
+    # moulinette.configure_chain([queue1, queue2])
 
-    # Lancer la simulation
-    n_customers = 1000  # Nombre de clients à simuler
+    rush_sim = RushSimulator(moulinette)
+
+    base_lambda = 30.0  # taux moyen base
+    duration = 24.0     # durée simulation en heures
+
     with st.spinner("Simulation en cours..."):
         try:
-            result = chain_queue.simulate(n_customers=n_customers)
+            # --- Simulation avec lambda(t) évolutif en interne ---
+            report = rush_sim.run_rush(duration=duration, base_rate=base_lambda)
 
-            # Afficher les résultats
-            st.subheader("Résultats de la simulation")
-            st.metric("Clients servis", result.n_served)
-            st.metric("Temps moyen dans le système (min)", f"{np.mean(result.system_times):.2f}")
-            st.metric("Temps moyen d'attente (min)", f"{np.mean(result.waiting_times):.2f}")
+            # --- VUE GLOBALE ---
+            st.subheader("Vue Globale (Chaîne complète)")
+            st.metric("Temps moyen attente (min)", f"{report.avg_waiting_time:.2f}")
+            st.metric("Temps moyen système (min)", f"{report.avg_system_time:.2f}")
+            st.metric("Longueur moyenne queue", f"{report.avg_queue_length:.2f}")
+            st.metric("Longueur max queue", f"{np.max([np.max(r.queue_length_trace) if len(r.queue_length_trace) > 0 else 0 for r in report.simulation_results])}")
+            st.metric("Rejetés (%)", f"{report.rejection_rate*100:.2f}")
+            st.metric("Utilisation (%)", f"{report.utilization*100:.2f}")
+            st.metric("Débit total", f"{report.throughput:.2f}")
 
-            # Graphique de la longueur de la queue
-            st.subheader("Longueur de la queue au cours du temps")
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=result.time_trace, y=result.queue_length_trace, mode='lines', name='Longueur de queue'))
-            fig.update_layout(title="Longueur de queue", xaxis_title="Temps", yaxis_title="Longueur de queue")
-            st.plotly_chart(fig, use_container_width=True)
+            # --- GRAPH GLOBAL ---
+            if report.time_series.get("time") is not None:
+                st.subheader("Charge système globale")
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=report.time_series["time"],
+                    y=report.time_series.get("queue_length", np.zeros_like(report.time_series["time"])),
+                    mode='lines',
+                    name='Longueur totale'
+                ))
+                fig.update_layout(
+                    title="Évolution de la charge",
+                    xaxis_title="Temps (h)",
+                    yaxis_title="Taille système"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            # --- DETAILS PAR QUEUE ---
+            st.subheader("Détails par Queue")
+            for i, r in enumerate(report.simulation_results):
+                with st.expander(f"Queue {i+1} ({r.n_served} servis)"):
+                    st.write(f"Arrivées : {r.n_arrivals}")
+                    st.write(f"Servis   : {r.n_served}")
+                    st.write(f"Rejetés  : {r.n_rejected}")
+
+                    if len(r.system_times) > 0:
+                        st.write(f"Temps moyen système : {np.mean(r.system_times):.2f}")
+
+                    if len(r.time_trace) > 0:
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=r.time_trace,
+                            y=r.queue_length_trace,
+                            mode='lines',
+                            name=f"Queue {i+1}"
+                        ))
+                        fig.update_layout(
+                            title=f"Queue {i+1} - Charge au cours du temps",
+                            xaxis_title="Temps (h)",
+                            yaxis_title="Longueur queue"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
         except Exception as e:
             st.error(f"Erreur lors de la simulation: {str(e)}")
 

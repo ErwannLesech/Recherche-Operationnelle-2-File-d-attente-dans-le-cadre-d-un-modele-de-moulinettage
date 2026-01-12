@@ -1,36 +1,13 @@
 """
-Module de représentation du système de moulinette complet.
+Module de représentation du système Moulinette complet.
 
-Ce module encapsule toute l'architecture de la moulinette EPITA
-en un objet cohérent permettant:
-- Configuration centralisée
-- Simulation de bout en bout
-- Analyse de performance
-- Optimisation
+Ce module ne se limite plus à un modèle théorique :
+il permet maintenant de simuler des chaînes de files d'attente
+avec des arrivées pouvant être:
 
-Architecture modélisée:
-══════════════════════════════════════════════════════════════
-                        MOULINETTE EPITA
-══════════════════════════════════════════════════════════════
-
-  Étudiants                                      Résultats
-  ┌──────┐                                       ┌──────┐
-  │ SUP  │──┐                                ┌──▶│ Pass │
-  └──────┘  │                                │   └──────┘
-  ┌──────┐  │    ┌─────────┐   ┌─────────┐   │   ┌──────┐
-  │ SPÉ  │──┼───▶│ Buffer  │──▶│ Runners │───┼──▶│ Fail │
-  └──────┘  │    │ (Queue) │   │ (c srv) │   │   └──────┘
-  ┌──────┐  │    └─────────┘   └─────────┘   │   ┌──────┐
-  │ ING1 │──┤         K              μ       └──▶│ Blck │
-  └──────┘  │                                    └──────┘
-  ┌──────┐  │                                     
-  │ ING2 │──┤    λ(t) varie selon:
-  └──────┘  │    - Heure du jour
-  ┌──────┐  │    - Jour de la semaine  
-  │ ING3 │──┘    - Proximité deadline
-  └──────┘       - Type d'étudiant
-
-══════════════════════════════════════════════════════════════
+- Fixes (λ constant)
+- Évolutives (λ(t) variable dans le temps)
+  → permet de simuler des rushs, variations journalières, effets deadline…
 
 Auteurs: ERO2 Team Markov Moulinette Configurators - EPITA
 """
@@ -40,12 +17,108 @@ from typing import Dict, List, Optional, Any
 import numpy as np
 from enum import Enum
 
-from ..models.base_queue import GenericQueue, ChainQueue, QueueMetrics
+from ..models.base_queue import GenericQueue, ChainQueue, QueueMetrics, SimulationResults
 from ..personas import Persona, PersonaFactory, StudentType
 from ..personas.usage_patterns import (
     UsagePattern, PatternFactory, AcademicCalendar, DeadlineEvent
 )
 from app.config.server_config import ServerConfig, ServerConfigDefaults, DEFAULT_SERVER_CONFIG
+
+
+@dataclass
+class SimulationConfig:
+    """
+    Configuration d'une simulation.
+    
+    Définit les paramètres de la simulation:
+    - Durée et granularité temporelle
+    - Personas à inclure
+    - Pattern d'utilisation
+    - Configuration serveur
+    """
+    duration_hours: float = 24.0          # Durée de simulation
+    time_step_minutes: float = 15.0       # Pas de temps pour analyse
+    
+    # Personas
+    personas: Dict[StudentType, Persona] = field(
+        default_factory=PersonaFactory.create_all_personas
+    )
+    
+    # Pattern temporel
+    usage_pattern: UsagePattern = field(
+        default_factory=PatternFactory.create_default_pattern
+    )
+    
+    # Configuration serveur
+    server_config: ServerConfig = field(default_factory=ServerConfig)
+    
+    # Paramètres de simulation
+    n_simulation_runs: int = 10           # Répétitions Monte Carlo
+    seed: Optional[int] = 42              # Graine aléatoire
+    
+    # Options
+    include_weekend: bool = False
+    start_hour: int = 0
+    start_day: int = 0  # 0=lundi
+    
+    # Deadline optionnelle
+    deadline_at_hour: Optional[float] = None
+
+@dataclass
+class SimulationReport:
+    """
+    Rapport détaillé d'une simulation.
+    
+    Contient toutes les métriques et recommandations.
+    """
+    # Configuration
+    config: SimulationConfig = None
+    
+    # Métriques théoriques
+    theoretical_metrics: QueueMetrics = None
+    
+    # Résultats de simulation
+    simulation_results: List[SimulationResults] = field(default_factory=list)
+    
+    # Métriques agrégées
+    avg_waiting_time: float = 0.0
+    std_waiting_time: float = 0.0
+    avg_system_time: float = 0.0
+    max_queue_length: int = 0
+    avg_queue_length: float = 0.0
+    rejection_rate: float = 0.0
+    throughput: float = 0.0
+    utilization: float = 0.0
+    
+    # Traces temporelles (moyennées)
+    time_series: Dict[str, np.ndarray] = field(default_factory=dict)
+    
+    # Analyse des pics
+    peak_hours: List[int] = field(default_factory=list)
+    peak_load: float = 0.0
+    
+    # Recommandations
+    recommendations: List[str] = field(default_factory=list)
+    optimal_servers: int = 0
+    estimated_cost: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convertit le rapport en dictionnaire."""
+        return {
+            'avg_waiting_time': self.avg_waiting_time,
+            'std_waiting_time': self.std_waiting_time,
+            'avg_system_time': self.avg_system_time,
+            'max_queue_length': self.max_queue_length,
+            'avg_queue_length': self.avg_queue_length,
+            'rejection_rate': self.rejection_rate,
+            'throughput': self.throughput,
+            'utilization': self.utilization,
+            'peak_hours': self.peak_hours,
+            'peak_load': self.peak_load,
+            'optimal_servers': self.optimal_servers,
+            'estimated_cost': self.estimated_cost,
+            'recommendations': self.recommendations,
+        }
 
 
 class ScalingMode(Enum):
@@ -301,24 +374,240 @@ class MoulinetteSystem:
         self._queue_chain = ChainQueue(queue_chain)
         return self
 
-    def simulate(self, arrival_rate: float, duration: float) -> QueueMetrics:
+    def simulate_fixed(self, arrival_rate: float, duration: float) -> SimulationReport:
         """
-        Simule le système moulinette avec la chaîne de queues configurée.
+        Simule la chaîne avec un taux d'arrivée constant λ.
 
         Args:
-            arrival_rate: Taux d'arrivée moyen.
-            duration: Durée de la simulation en heures.
+            arrival_rate: λ constant
+            duration: durée en heures
 
         Returns:
-            Métriques agrégées de la simulation.
+            SimulationReport
         """
-        if not hasattr(self, '_queue_chain'):
-            raise ValueError("La chaîne de queues n'est pas configurée.")
+        metrics: SimulationResults = self._queue_chain.simulate(
+            arrival_rate=arrival_rate,
+            duration=duration
+        )
 
-        # Simuler la chaîne de queues
-        metrics = self._queue_chain.simulate(arrival_rate, duration)
-        return metrics
-    
+        report = SimulationReport()
+        report.simulation_results = [metrics]
+        report.avg_waiting_time = np.mean(metrics.waiting_times) if len(metrics.waiting_times) > 0 else 0.0
+        report.avg_system_time  = np.mean(metrics.system_times) if len(metrics.system_times) > 0 else 0.0
+        report.avg_queue_length = np.mean(metrics.queue_length_trace) if len(metrics.queue_length_trace) > 0 else 0.0
+        report.rejection_rate   = metrics.n_rejected / metrics.n_arrivals if metrics.n_arrivals > 0 else 0.0
+        report.throughput       = metrics.n_served / duration  # durée en heures
+        report.utilization      = np.mean(metrics.system_size_trace / self._queue_chain.total_servers())  # approximation
+        return report
+
+    def simulate_evolving(self, arrival_profile, duration: float, step_minutes: float = 5.0):
+        """
+        Solution finale : simulation continue avec transfert entre queues.
+        L'état de chaque queue est préservé entre les pas de temps.
+        """
+        import heapq
+        from app.models.base_queue import SimulationResults
+        
+        step_h = step_minutes / 60.0
+        time = 0.0
+
+        def resolve_lambda(t):
+            if callable(arrival_profile):
+                return arrival_profile(t)
+            else:
+                arr = [p for p in arrival_profile if p[0] <= t]
+                return arr[-1][1] if arr else arrival_profile[0][1]
+
+        # États persistants pour chaque queue
+        queue_states = []
+        for i, queue in enumerate(self._queue_chain.queues):
+            queue_states.append({
+                "event_heap": [],
+                "queue_state": [],  # Liste de (customer_id, service_time, arrival_time)
+                "busy_servers": 0,
+                "service_start_times": {},
+                "departure_times": {},
+                "accepted_arrivals": [],
+                "accepted_service_times": [],
+                "waiting_times_list": [],
+                "system_times_list": [],
+                "n_rejected": 0,
+                "customer_counter": 0,
+                "pending_service_times": {},  # Pour stocker les temps de service pré-générés
+                # Pour le traçage
+                "time_trace": [],
+                "queue_length_trace": [],
+                "system_size_trace": []
+            })
+
+        # Boucle principale
+        while time < duration:
+            lam = resolve_lambda(time)
+            step_end = min(time + step_h, duration)
+            
+            # ====================================================================
+            # Traiter chaque queue
+            # ====================================================================
+            for i, queue in enumerate(self._queue_chain.queues):
+                state = queue_states[i]
+                c = queue.c
+                K = queue.K
+                
+                # Générer une arrivée externe pour la première queue uniquement
+                if i == 0 and lam > 0:
+                    next_arrival = time + queue.rng.exponential(1 / lam)
+                    if next_arrival < step_end:
+                        customer_id = state["customer_counter"]
+                        state["customer_counter"] += 1
+                        heapq.heappush(state["event_heap"], (next_arrival, "arrival", customer_id))
+                
+                # Traiter tous les événements dans [time, step_end]
+                departures_this_step = []
+                
+                while state["event_heap"] and state["event_heap"][0][0] < step_end:
+                    event_time, event_type, customer_id = heapq.heappop(state["event_heap"])
+                    system_size = len(state["queue_state"]) + state["busy_servers"]
+                    
+                    if event_type == "arrival":
+                        # Vérifier capacité
+                        if K is not None and system_size >= K:
+                            state["n_rejected"] += 1
+                            continue
+                        
+                        # Client accepté
+                        state["accepted_arrivals"].append(event_time)
+                        
+                        # Récupérer ou générer le temps de service
+                        if customer_id in state["pending_service_times"]:
+                            service_time = state["pending_service_times"].pop(customer_id)
+                        else:
+                            service_time = queue._generate_service_times_for_model(1)[0]
+                        
+                        state["accepted_service_times"].append(service_time)
+                        
+                        # Serveur disponible ?
+                        if state["busy_servers"] < c:
+                            # Service immédiat
+                            state["busy_servers"] += 1
+                            state["service_start_times"][customer_id] = event_time
+                            depart_time = event_time + service_time
+                            state["departure_times"][customer_id] = depart_time
+                            
+                            state["waiting_times_list"].append(0.0)
+                            state["system_times_list"].append(service_time)
+                            
+                            heapq.heappush(state["event_heap"], (depart_time, "departure", customer_id))
+                        else:
+                            # Mettre en file d'attente
+                            state["queue_state"].append((customer_id, service_time, event_time))
+                    
+                    else:  # departure
+                        state["busy_servers"] -= 1
+                        departures_this_step.append((event_time, customer_id))
+                        
+                        # Servir le prochain client en attente
+                        if state["queue_state"]:
+                            next_id, next_service_time, next_arrival_time = state["queue_state"].pop(0)
+                            state["busy_servers"] += 1
+                            
+                            state["service_start_times"][next_id] = event_time
+                            next_depart = event_time + next_service_time
+                            state["departure_times"][next_id] = next_depart
+                            
+                            wait_time = event_time - next_arrival_time
+                            state["waiting_times_list"].append(wait_time)
+                            state["system_times_list"].append(next_depart - next_arrival_time)
+                            
+                            heapq.heappush(state["event_heap"], (next_depart, "departure", next_id))
+                
+                # Enregistrer l'état actuel pour le traçage
+                state["time_trace"].append(step_end)
+                state["queue_length_trace"].append(len(state["queue_state"]))
+                state["system_size_trace"].append(len(state["queue_state"]) + state["busy_servers"])
+                
+                # ================================================================
+                # TRANSFERT VERS LA QUEUE SUIVANTE
+                # ================================================================
+                if i + 1 < len(self._queue_chain.queues) and departures_this_step:
+                    next_state = queue_states[i + 1]
+                    next_queue = self._queue_chain.queues[i + 1]
+                    
+                    for dep_time, old_id in departures_this_step:
+                        # Créer un nouveau client dans la queue suivante
+                        new_customer_id = next_state["customer_counter"]
+                        next_state["customer_counter"] += 1
+                        
+                        # Générer son temps de service à l'avance
+                        service_time = next_queue._generate_service_times_for_model(1)[0]
+                        next_state["pending_service_times"][new_customer_id] = service_time
+                        
+                        # Planifier son arrivée
+                        heapq.heappush(
+                            next_state["event_heap"],
+                            (dep_time, "arrival", new_customer_id)
+                        )
+            
+            time = step_end
+
+        # ====================================================================
+        # Construire les résultats finaux
+        # ====================================================================
+        sim_results = []
+        for i, state in enumerate(queue_states):
+            sim_results.append(
+                SimulationResults(
+                    arrival_times=np.array(state["accepted_arrivals"]),
+                    service_start_times=np.array(list(state["service_start_times"].values())),
+                    departure_times=np.array(list(state["departure_times"].values())),
+                    service_times=np.array(state["accepted_service_times"]),
+                    waiting_times=np.array(state["waiting_times_list"]),
+                    system_times=np.array(state["system_times_list"]),
+                    n_arrivals=len(state["accepted_arrivals"]) + state["n_rejected"],
+                    n_served=len(state["accepted_arrivals"]),
+                    n_rejected=state["n_rejected"],
+                    time_trace=np.array(state["time_trace"]),
+                    queue_length_trace=np.array(state["queue_length_trace"]),
+                    system_size_trace=np.array(state["system_size_trace"])
+                )
+            )
+
+        # Créer le rapport
+        report = SimulationReport()
+        report.simulation_results = sim_results
+        
+        # Métriques globales
+        valid_wait = [np.mean(r.waiting_times) for r in sim_results if len(r.waiting_times) > 0]
+        valid_sys = [np.mean(r.system_times) for r in sim_results if len(r.system_times) > 0]
+        valid_ql = [np.mean(r.queue_length_trace) for r in sim_results if len(r.queue_length_trace) > 0]
+        
+        report.avg_waiting_time = np.mean(valid_wait) if valid_wait else 0.0
+        report.avg_system_time = np.mean(valid_sys) if valid_sys else 0.0
+        report.avg_queue_length = np.mean(valid_ql) if valid_ql else 0.0
+        report.rejection_rate = np.mean([r.n_rejected / r.n_arrivals if r.n_arrivals > 0 else 0.0 for r in sim_results])
+        report.throughput = sum(r.n_served for r in sim_results) / duration
+        
+        total_servers = self._queue_chain.total_servers()
+        valid_util = [r for r in sim_results if len(r.system_size_trace) > 0]
+        if valid_util:
+            report.utilization = np.mean([np.mean(r.system_size_trace) / total_servers for r in valid_util])
+        else:
+            report.utilization = 0.0
+
+        # Traces globales (somme des longueurs de queue)
+        if sim_results and all(len(r.time_trace) > 0 for r in sim_results):
+            # Utiliser les traces de la dernière queue comme référence temporelle
+            report.time_series["time"] = sim_results[-1].time_trace
+            
+            # Sommer les longueurs de queue de toutes les queues
+            min_len = min(len(r.queue_length_trace) for r in sim_results)
+            total_queue_length = np.zeros(min_len)
+            for r in sim_results:
+                total_queue_length += r.queue_length_trace[:min_len]
+            
+            report.time_series["queue_length"] = total_queue_length
+
+        return report
+
     def get_queue_model(
         self,
         arrival_rate: Optional[float] = None
