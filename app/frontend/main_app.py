@@ -92,33 +92,29 @@ def main():
         
         buffer_size = st.slider(
             "Taille du buffer K",
-            min_value=10, max_value=10000, value=100, step=20
+            min_value=10, max_value=50000, value=100, step=20
         )
     
     # Onglets principaux
     tabs = st.tabs([
-        "Modeles de files",
         "Personas",
-        "Simulation Rush",
-        "Optimisation",
-        "Auto-scaling"
+        "Simulation - Moulinette",
+        "Optimisation - Moulinette",
+        "Benchmark - Modeles de files"
     ])
     
-    with tabs[0]:
-        render_queue_models_tab(mu_rate1, n_servers, buffer_size)
     
-    with tabs[1]:
+    with tabs[0]:
         render_personas_tab()
     
-    with tabs[2]:
+    with tabs[1]:
         render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size)
     
-    with tabs[3]:
+    with tabs[2]:
         render_optimization_tab(buffer_size)
     
-    with tabs[4]:
-        render_scaling_tab(mu_rate1, buffer_size, n_servers)
-
+    with tabs[3]:
+        render_queue_models_tab(mu_rate1, n_servers, buffer_size)
 
 def render_queue_models_tab(mu_rate, n_servers, buffer_size):
     """Onglet de comparaison des modèles de files d'attente."""
@@ -157,13 +153,14 @@ def render_queue_models_tab(mu_rate, n_servers, buffer_size):
         # Calculer les métriques théoriques pour chaque modèle
         models_data = []
         service_mean = 1.0 / mu_rate
-        mu_rate_model = st.slider("Taux de service μ (par serveur/min)",
-            min_value=1.0, max_value=50.0, value=10.0, step=0.5
-        )
 
         lambda_rate = st.slider(
             "Taux d'arrivée λ (soumissions/min)",
             min_value=1.0, max_value=100.0, value=30.0, step=1.0
+        )
+
+        mu_rate_model = st.slider("Taux de service μ (par serveur/min)",
+            min_value=1.0, max_value=50.0, value=10.0, step=0.5
         )
 
         # Modèles mono-serveur (condition: lambda < mu)
@@ -512,8 +509,8 @@ def render_queue_models_tab(mu_rate, n_servers, buffer_size):
                     
                     # Sauvegarde des résultats
                     if save_simulation:
-                        sim_dir = Path(__file__).parent.parent.parent / 'simulations'
-                        sim_dir.mkdir(exist_ok=True)
+                        sim_dir = Path(__file__).parent.parent.parent / 'simulations' / 'modele_comparative'
+                        sim_dir.mkdir(parents=True, exist_ok=True)
                         
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         filename = f"simulation_{timestamp}.json"
@@ -640,14 +637,14 @@ def render_personas_tab():
 
 def render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size):
     """Onglet de simulation de rush basé sur les Personas."""
-    st.header("Simulation Rush & Personas")
+    st.header("Simulation - Moulinette EPITA")
 
     # 1. Configuration du Système (Chaîne de 2 queues)
     moulinette = MoulinetteSystem()
     
     # Configuration des serveurs (capacité totale répartie ou ajustée)
     # Queue 1 : Pré-tri / Compilation (M/M/c)
-    queue1 = GenericQueue(lambda_rate=1, mu_rate=mu_rate1, c=n_servers, kendall_notation="M/M/3", K=buffer_size)
+    queue1 = GenericQueue(lambda_rate=1, mu_rate=mu_rate1, c=n_servers, kendall_notation=f'M/M/{n_servers}', K=buffer_size)
     # Queue 2 : Tests / Validation (M/M/1 - goulot d'étranglement typique)
     queue2 = GenericQueue(lambda_rate=1, mu_rate=mu_rate2, c=1, kendall_notation="M/M/1", K=buffer_size)
     
@@ -709,6 +706,7 @@ def render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size):
                         )
                 return total_rate
 
+        save_rush = st.checkbox("Sauvegarder la simulation Rush", value=True)
         run_button = st.button("Lancer la simulation", type="primary")
 
     with col2:
@@ -767,7 +765,24 @@ def render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size):
                                     subplot_titles=("Longueur des files d'attente", "Temps d'attente par client"))
 
                 colors = ['#EF553B', '#FFA15A'] # Couleurs Plotly
-                
+
+                fig.update_xaxes(
+                    row=1, col=1,
+                    type="linear",
+                    showticklabels=True,
+                    range=[0, duration],
+                    tickmode="linear",
+                    dtick=2
+                )
+                fig.update_xaxes(
+                    row=2, col=1,
+                    type="linear",
+                    showticklabels=True,
+                    range=[0, duration],
+                    tickmode="linear",
+                    dtick=2
+                )
+
                 # Trace Queue Lengths
                 for i, res in enumerate(report.simulation_results):
                     if len(res.time_trace) > 0:
@@ -796,8 +811,88 @@ def render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size):
                 fig.update_yaxes(title_text="Clients", row=1, col=1)
                 fig.update_yaxes(title_text="Minutes", row=2, col=1)
                 fig.update_xaxes(title_text="Temps de simulation (h)", row=2, col=1)
+                fig.update_xaxes(title_text="Temps de simulation (h)", row=1, col=1)
                 
                 st.plotly_chart(fig, use_container_width=True)
+
+                if save_rush:
+                    sim_dir = Path(__file__).parent.parent.parent / "simulations" / "moulinette_simulations"
+                    sim_dir.mkdir(parents=True, exist_ok=True)
+
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"rush_simulation_{timestamp}.json"
+                    filepath = sim_dir / filename
+
+                    # Agrégations globales simples et robustes
+                    total_arrivals = sum(r.n_arrivals for r in report.simulation_results)
+                    total_served = sum(r.n_served for r in report.simulation_results)
+                    total_rejected = sum(r.n_rejected for r in report.simulation_results)
+
+                    all_waiting = np.concatenate([r.waiting_times for r in report.simulation_results if len(r.waiting_times) > 0]) \
+                        if any(len(r.waiting_times) > 0 for r in report.simulation_results) else np.array([])
+
+                    all_system = np.concatenate([r.system_times for r in report.simulation_results if len(r.system_times) > 0]) \
+                        if any(len(r.system_times) > 0 for r in report.simulation_results) else np.array([])
+
+                    save_data = {
+                        "timestamp": timestamp,
+
+                        # --- paramètres simul —
+                        "rush_parameters": {
+                            "mu_rate_exec": mu_rate1,
+                            "mu_rate_results": mu_rate2,
+                            "n_servers": n_servers,
+                            "buffer_size": buffer_size,
+                            "duration_hours": duration,
+                            "mode": sim_mode
+                        },
+
+                        # --- résultats globaux —
+                        "system_results": {
+                            "total_arrivals": int(total_arrivals),
+                            "total_served": int(total_served),
+                            "total_rejected": int(total_rejected),
+                            "reject_rate_percent":
+                                float(100 * total_rejected / total_arrivals) if total_arrivals > 0 else 0.0,
+                            "avg_waiting_time_minutes":
+                                float(np.mean(all_waiting) * 60) if len(all_waiting) > 0 else 0.0,
+                            "avg_system_time_minutes":
+                                float(np.mean(all_system) * 60) if len(all_system) > 0 else 0.0
+                        },
+
+                        # --- détails par queue —
+                        "queues": [
+                            {
+                                "index": i + 1,
+                                "kendall": moulinette._queue_chain.queues[i].kendall_notation,
+                                "served": int(r.n_served),
+                                "arrivals": int(r.n_arrivals),
+                                "rejected": int(r.n_rejected),
+                                "avg_waiting_minutes":
+                                    float(np.mean(r.waiting_times) * 60) if len(r.waiting_times) > 0 else 0.0,
+                                "max_queue_length":
+                                    int(np.max(r.queue_length_trace)) if len(r.queue_length_trace) > 0 else 0
+                            }
+                            for i, r in enumerate(report.simulation_results)
+                        ],
+
+                        # --- timeline globale si existante —
+                        "timeline": {
+                            "queues": [
+                                {
+                                    "queue": i + 1,
+                                    "time": r.time_trace.tolist() if len(r.time_trace) > 0 else [],
+                                    "queue_length": r.queue_length_trace.tolist() if len(r.queue_length_trace) > 0 else []
+                                }
+                                for i, r in enumerate(report.simulation_results)
+                            ]
+                        }
+                    }
+
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        json.dump(save_data, f, indent=2, ensure_ascii=False)
+
+                    st.success(f"Simulation Rush sauvegardée dans : {filepath}")
 
             except Exception as e:
                 st.error(f"Erreur durant la simulation: {str(e)}")
@@ -1231,112 +1326,6 @@ def render_optimization_tab(buffer_size):
                               help=f"Pénalité pour écart de ρ par rapport à la cible {target_rho:.0%}")
             else:
                 st.error("Aucune configuration stable trouvée. Essayez d'augmenter le nombre de serveurs ou le taux de service.")
-
-
-def render_scaling_tab(mu_rate, buffer_size, current_servers):
-    """Onglet de recommandations d'auto-scaling."""
-    st.header("Recommandations d'Auto-scaling")
-    
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        st.subheader("Politique de scaling")
-        
-        scale_up_threshold = st.slider("Seuil scale up (rho)", 0.5, 0.95, 0.75, 0.05, key="scale_up_th")
-        scale_down_threshold = st.slider("Seuil scale down (rho)", 0.1, 0.5, 0.35, 0.05, key="scale_down_th")
-        emergency_threshold = st.slider("Seuil urgence (rho)", 0.8, 1.0, 0.95, 0.01, key="emergency_th")
-        
-        cost_per_server = st.number_input("Cout/serveur/h", 0.1, 10.0, 0.5, key="scaling_cost")
-        
-        current_hour = st.slider("Heure actuelle", 0, 23, 14, key="scaling_hour")
-        hours_to_deadline = st.slider("Heures avant deadline", 0.0, 48.0, 24.0, 0.5, key="scaling_deadline")
-        
-        get_reco_btn = st.button("Obtenir recommandation")
-    
-    with col2:
-        if get_reco_btn:
-            # Créer le conseiller
-            policy = ScalingPolicy(
-                scale_up_threshold=scale_up_threshold,
-                scale_down_threshold=scale_down_threshold,
-                emergency_threshold=emergency_threshold
-            )
-            
-            advisor = ScalingAdvisor(
-                mu_rate=mu_rate,
-                buffer_size=buffer_size,
-                policy=policy,
-                cost_per_server_hour=cost_per_server
-            )
-            
-            # Créer les personas
-            personas = PersonaFactory.create_all_personas()
-            
-            # Calculer le taux d'arrivée actuel à partir des personas
-            current_lambda = PersonaFactory.get_combined_arrival_rate(
-                personas, 
-                hour=current_hour, 
-                hours_to_deadline=hours_to_deadline
-            ) / 60.0  # Convertir en soumissions/min
-            
-            # Obtenir la recommandation
-            reco = advisor.get_recommendation(
-                current_servers=current_servers,
-                current_lambda=current_lambda,
-                personas=personas,
-                hour=current_hour,
-                hours_to_deadline=hours_to_deadline
-            )
-            
-            # Afficher la recommandation
-            if reco.action.value == "none":
-                st.success("[OK] " + reco.reason)
-            elif reco.action.value == "scale_up":
-                st.warning("[UP] " + reco.reason)
-            elif reco.action.value == "emergency":
-                st.error("[URGENT] " + reco.reason)
-            else:
-                st.info("[DOWN] " + reco.reason)
-            
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("Serveurs actuels", reco.current_servers)
-            col_b.metric("Serveurs recommandés", reco.recommended_servers, reco.delta_servers)
-            col_c.metric("Confiance", f"{reco.confidence:.0%}")
-            
-            col_d, col_e, col_f = st.columns(3)
-            col_d.metric("Charge actuelle", f"{reco.current_load:.0%}")
-            col_e.metric("Charge prévue", f"{reco.predicted_load:.0%}")
-            col_f.metric("Impact coût", f"{reco.estimated_cost_impact:+.2f}€/h")
-            
-            # Planification sur 24h
-            st.subheader("Planning de scaling sur 24h")
-            
-            analysis = advisor.analyze_scaling_opportunities(
-                current_servers=current_servers,
-                personas=personas,
-                hours=24
-            )
-            
-            st.info(analysis['recommendation'])
-            
-            # Graphique du planning
-            schedule = analysis['schedule']
-            hours = list(schedule.keys())
-            servers = list(schedule.values())
-            
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=hours, y=servers, name='Serveurs recommandés'))
-            fig.add_hline(y=current_servers, line_dash="dash", line_color="red",
-                         annotation_text=f"Actuel: {current_servers}")
-            
-            fig.update_layout(
-                title='Nombre de serveurs recommandé par heure',
-                xaxis_title='Heure',
-                yaxis_title='Serveurs',
-                height=350
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
 
 if __name__ == "__main__":
     main()
