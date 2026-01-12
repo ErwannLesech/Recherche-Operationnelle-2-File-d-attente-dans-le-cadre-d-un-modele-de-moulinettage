@@ -73,15 +73,15 @@ def main():
     
     # Sidebar pour les paramètres globaux
     with st.sidebar:
-        st.header("Parametres globaux")
+        st.header("Parametres globaux de la moulinette")
         
-        lambda_rate = st.slider(
-            "Taux d'arrivée λ (soumissions/min)",
-            min_value=1.0, max_value=100.0, value=30.0, step=1.0
+        mu_rate1 = st.slider(
+            "Taux de service μ1 (par serveur/min) (Queue exécution des test-suites)",
+            min_value=1.0, max_value=50.0, value=10.0, step=0.5
         )
-        
-        mu_rate = st.slider(
-            "Taux de service μ (par serveur/min)",
+
+        mu_rate2 = st.slider(
+            "Taux de service μ2 (par serveur/min) (Queue renvoie des résultats)",
             min_value=1.0, max_value=50.0, value=10.0, step=0.5
         )
         
@@ -92,24 +92,8 @@ def main():
         
         buffer_size = st.slider(
             "Taille du buffer K",
-            min_value=10, max_value=500, value=100, step=10
+            min_value=10, max_value=10000, value=100, step=20
         )
-        
-        st.divider()
-        st.markdown("### Etat du systeme")
-        rho = lambda_rate / (n_servers * mu_rate)
-        
-        if rho < 0.7:
-            status_color = "[OK]"
-            status_text = "Stable"
-        elif rho < 0.9:
-            status_color = "[!]"
-            status_text = "Charge"
-        else:
-            status_color = "[X]"
-            status_text = "Critique"
-        
-        st.metric("Utilisation ρ", f"{rho:.2%}", status_text)
     
     # Onglets principaux
     tabs = st.tabs([
@@ -122,31 +106,30 @@ def main():
     ])
     
     with tabs[0]:
-        render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size)
+        render_queue_models_tab(mu_rate1, n_servers, buffer_size)
     
     with tabs[1]:
         render_personas_tab()
     
     with tabs[2]:
-        render_rush_simulation_tab(mu_rate, buffer_size)
+        render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size)
     
     with tabs[3]:
-        render_optimization_tab(lambda_rate, mu_rate, buffer_size)
+        render_optimization_tab(mu_rate1, buffer_size)
     
     with tabs[4]:
-        render_scaling_tab(mu_rate, buffer_size, n_servers, lambda_rate)
-    
+        render_scaling_tab(mu_rate1, buffer_size, n_servers)
+
     with tabs[5]:
-        render_heatmaps_tab(mu_rate, buffer_size)
+        render_heatmaps_tab(mu_rate1, buffer_size)
 
 
-def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
+def render_queue_models_tab(mu_rate, n_servers, buffer_size):
     """Onglet de comparaison des modèles de files d'attente."""
     st.header("Comparaison des modeles de files d'attente")
 
     # Ensure proper type conversion for user inputs
     try:
-        lambda_rate = float(lambda_rate)
         mu_rate = float(mu_rate)
         n_servers = int(n_servers)
         buffer_size = int(buffer_size)
@@ -167,7 +150,6 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
         show_mmc = st.checkbox("M/M/c", value=True, key="th_mmc")
         show_mdc = st.checkbox("M/D/c", value=True, key="th_mdc")
         show_mgc = st.checkbox("M/G/c", value=True, key="th_mgc")
-        show_mmck = st.checkbox("M/M/c/K (capacite limitee)", value=False, key="th_mmck")
 
         cv_squared = st.slider(
             "CV2 service (pour M/G/1 et M/G/c)",
@@ -179,11 +161,18 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
         # Calculer les métriques théoriques pour chaque modèle
         models_data = []
         service_mean = 1.0 / mu_rate
-        service_variance = cv_squared * (service_mean ** 2)
+        mu_rate_model = st.slider("Taux de service μ (par serveur/min)",
+            min_value=1.0, max_value=50.0, value=10.0, step=0.5
+        )
+
+        lambda_rate = st.slider(
+            "Taux d'arrivée λ (soumissions/min)",
+            min_value=1.0, max_value=100.0, value=30.0, step=1.0
+        )
 
         # Modèles mono-serveur (condition: lambda < mu)
-        if show_mm1 and lambda_rate < mu_rate:
-            queue = GenericQueue(lambda_rate, mu_rate, "M/M/1")
+        if show_mm1 and lambda_rate < mu_rate_model:
+            queue = GenericQueue(lambda_rate, mu_rate_model, "M/M/1")
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': 'M/M/1',
@@ -195,8 +184,8 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'P_blocage': 0.0
             })
 
-        if show_md1 and lambda_rate < mu_rate:
-            queue = GenericQueue(lambda_rate, mu_rate, "M/D/1")
+        if show_md1 and lambda_rate < mu_rate_model:
+            queue = GenericQueue(lambda_rate, mu_rate_model, "M/D/1")
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': 'M/D/1',
@@ -208,8 +197,8 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'P_blocage': 0.0
             })
 
-        if show_mg1 and lambda_rate < mu_rate:
-            queue = GenericQueue(lambda_rate, mu_rate, "M/G/1")
+        if show_mg1 and lambda_rate < mu_rate_model:
+            queue = GenericQueue(lambda_rate, mu_rate_model, "M/G/1")
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': f'M/G/1 (CV2={cv_squared})',
@@ -222,8 +211,8 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
             })
 
         # Modèles multi-serveurs (condition: lambda < c*mu)
-        if show_mmc and lambda_rate < n_servers * mu_rate:
-            queue = GenericQueue(lambda_rate, mu_rate, "M/M/c", n_servers)
+        if show_mmc and lambda_rate < n_servers * mu_rate_model:
+            queue = GenericQueue(lambda_rate, mu_rate_model, "M/M/c", n_servers)
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': f'M/M/{n_servers}',
@@ -235,8 +224,8 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'P_blocage': 0.0
             })
 
-        if show_mdc and lambda_rate < n_servers * mu_rate:
-            queue = GenericQueue(lambda_rate, mu_rate, "M/D/c", n_servers)
+        if show_mdc and lambda_rate < n_servers * mu_rate_model:
+            queue = GenericQueue(lambda_rate, mu_rate_model, "M/D/c", n_servers)
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': f'M/D/{n_servers}',
@@ -248,8 +237,8 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'P_blocage': 0.0
             })
 
-        if show_mgc and lambda_rate < n_servers * mu_rate:
-            queue = GenericQueue(lambda_rate, mu_rate, "M/G/c", n_servers)
+        if show_mgc and lambda_rate < n_servers * mu_rate_model:
+            queue = GenericQueue(lambda_rate, mu_rate_model, "M/G/c", n_servers)
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': f'M/G/{n_servers} (CV2={cv_squared})',
@@ -259,19 +248,6 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'Wq (min)': metrics.Wq,
                 'rho': metrics.rho,
                 'P_blocage': 0.0
-            })
-
-        if show_mmck:
-            queue = GenericQueue(lambda_rate, mu_rate, "M/M/c", n_servers, buffer_size)
-            metrics = queue.compute_theoretical_metrics()
-            models_data.append({
-                'Modele': f'M/M/{n_servers}/{buffer_size}',
-                'L (clients)': metrics.L,
-                'Lq (en attente)': metrics.Lq,
-                'W (min)': metrics.W,
-                'Wq (min)': metrics.Wq,
-                'rho': metrics.rho,
-                'P_blocage': metrics.Pk
             })
 
         if models_data:
@@ -666,93 +642,174 @@ def render_personas_tab():
     fig.update_layout(barmode='group', height=350)
     st.plotly_chart(fig, use_container_width=True)
 
+def render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size):
+    """Onglet de simulation de rush basé sur les Personas."""
+    st.header("Simulation Rush & Personas")
 
-def render_rush_simulation_tab(mu_rate, buffer_size):
-    import streamlit as st
-    import plotly.graph_objects as go
-    import numpy as np
-
-    st.header("Simulation Rush")
-
-    # --- Configuration système ---
+    # 1. Configuration du Système (Chaîne de 2 queues)
     moulinette = MoulinetteSystem()
-    moulinette.configure(n_servers=4, buffer_size=buffer_size, service_rate=mu_rate)
+    
+    # Configuration des serveurs (capacité totale répartie ou ajustée)
+    # Queue 1 : Pré-tri / Compilation (M/M/c)
+    queue1 = GenericQueue(lambda_rate=1, mu_rate=mu_rate1, c=n_servers, kendall_notation="M/M/3", K=buffer_size)
+    # Queue 2 : Tests / Validation (M/M/1 - goulot d'étranglement typique)
+    queue2 = GenericQueue(lambda_rate=1, mu_rate=mu_rate2, c=1, kendall_notation="M/M/1", K=buffer_size)
+    
+    moulinette.configure_chain([queue1, queue2])
 
-    # Optionnel : configurer une chaîne de queues personnalisée (2 queues)
-    # Par défaut ChainQueue a déjà 2 queues, sinon :
-    # from app.models.base_queue import GenericQueue
-    # queue1 = GenericQueue(lambda_rate=1, mu_rate=mu_rate, c=2)
-    # queue2 = GenericQueue(lambda_rate=1, mu_rate=mu_rate, c=2)
-    # moulinette.configure_chain([queue1, queue2])
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.subheader("Scénario")
+        
+        # Choix du mode de simulation
+        sim_mode = st.radio(
+            "Mode de génération de charge",
+            ["Synthétique (Gaussienne)", "Basé sur les Personas (Réaliste)"]
+        )
+        
+        duration = st.slider("Durée simulation (h)", 1.0, 48.0, 24.0, 1.0)
+        
+        if sim_mode == "Synthétique (Gaussienne)":
+            base_lambda = st.slider("Taux de base λ (sub/h)", 10.0, 200.0, 50.0, 10.0)
+            peak_multiplier = st.slider("Multiplicateur de pic", 1.5, 10.0, 3.0, 0.5)
+            rush_center = st.slider("Pic du rush (fraction du temps)", 0.1, 0.9, 0.7, 0.1)
+            
+            # Fonction lambda simple (mathématique)
+            def lambda_profile_func(t):
+                x = t / duration
+                width = 0.15
+                rush = np.exp(-((x - rush_center) ** 2) / (2 * width ** 2))
+                return base_lambda * (1 + rush * (peak_multiplier - 1))
+                
+        else: # Mode Personas
+            st.info("La charge est calculée en fonction de la population étudiante définie dans 'Personas'.")
+            hours_to_deadline = st.slider("Heures avant deadline (au début)", duration, duration + 48.0, duration, 1.0)
+            start_hour = st.slider("Heure de début de simulation", 0, 23, 8)
+            
+            # Récupérer les personas
+            personas = PersonaFactory.create_all_personas()
+            
+            # Permettre de désactiver certains types d'étudiants pour tester
+            selected_types = st.multiselect(
+                "Populations actives",
+                [p.student_type.name for p in personas.values()],
+                default=[p.student_type.name for p in personas.values()]
+            )
+            
+            # Fonction lambda complexe (basée sur les agents)
+            def lambda_profile_func(t):
+                current_hour = (start_hour + int(t)) % 24
+                # Temps restant avant deadline qui diminue au fur et à mesure que t avance
+                remaining_time = max(0, hours_to_deadline - t)
+                
+                total_rate = 0.0
+                for p in personas.values():
+                    if p.student_type.name in selected_types:
+                        total_rate += p.get_arrival_rate(
+                            hour=current_hour, 
+                            is_weekend=False, 
+                            hours_to_deadline=remaining_time
+                        )
+                return total_rate
 
-    rush_sim = RushSimulator(moulinette)
+        run_button = st.button("Lancer la simulation", type="primary")
 
-    base_lambda = 30.0  # taux moyen base
-    duration = 24.0     # durée simulation en heures
+    with col2:
+        # Prévisualisation de la courbe de charge
+        st.subheader("Charge prévue λ(t)")
+        t_preview = np.linspace(0, duration, 100)
+        lambda_values = [lambda_profile_func(t) for t in t_preview]
+        
+        fig_profile = go.Figure()
+        fig_profile.add_trace(go.Scatter(
+            x=t_preview, y=lambda_values,
+            mode='lines', fill='tozeroy',
+            name='Taux d\'arrivée',
+            line=dict(color='#1f77b4')
+        ))
+        
+        # Ajouter une ligne rouge pour la capacité théorique totale du système
+        total_capacity = (n_servers) * mu_rate1 * 60 # 4 serveurs * mu (converti en heure si mu est en min)
+        # Note: Dans ton code mu_rate semble être par minute, donc * 60 pour l'heure
+        
+        fig_profile.add_hline(
+            y=total_capacity, 
+            line_dash="dash", line_color="red",
+            annotation_text="Capacité théorique max"
+        )
+        
+        fig_profile.update_layout(
+            xaxis_title="Temps (h)",
+            yaxis_title="Soumissions / heure",
+            height=300,
+            margin=dict(t=20, b=20)
+        )
+        st.plotly_chart(fig_profile, use_container_width=True)
 
-    with st.spinner("Simulation en cours..."):
-        try:
-            # --- Simulation avec lambda(t) évolutif en interne ---
-            report = rush_sim.run_rush(duration=duration, base_rate=base_lambda)
+    if run_button:
+        with st.spinner("Simulation du système de moulinette en cours..."):
+            try:
+                # Lancement de la simulation via le système évolutif
+                # On passe directement la fonction lambda_profile_func
+                report = moulinette.simulate_evolving(lambda_profile_func, duration)
 
-            # --- VUE GLOBALE ---
-            st.subheader("Vue Globale (Chaîne complète)")
-            st.metric("Temps moyen attente (min)", f"{report.avg_waiting_time:.2f}")
-            st.metric("Temps moyen système (min)", f"{report.avg_system_time:.2f}")
-            st.metric("Longueur moyenne queue", f"{report.avg_queue_length:.2f}")
-            st.metric("Longueur max queue", f"{np.max([np.max(r.queue_length_trace) if len(r.queue_length_trace) > 0 else 0 for r in report.simulation_results])}")
-            st.metric("Rejetés (%)", f"{report.rejection_rate*100:.2f}")
-            st.metric("Utilisation (%)", f"{report.utilization*100:.2f}")
-            st.metric("Débit total", f"{report.throughput:.2f}")
+                # --- AFFICHAGE DES RÉSULTATS (Code existant conservé et nettoyé) ---
+                
+                # KPIs Globaux
+                st.divider()
+                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+                kpi1.metric("Temps Attente Moy.", f"{report.avg_waiting_time*60:.1f} min")
+                kpi2.metric("Queue Max (Clients)", f"{int(max([np.max(r.queue_length_trace) if len(r.queue_length_trace) > 0 else 0 for r in report.simulation_results]))}")
+                kpi3.metric("Taux de Rejet", f"{report.rejection_rate:.2%}")
+                kpi4.metric("Total Servis", f"{sum(r.n_served for r in report.simulation_results)}")
 
-            # --- GRAPH GLOBAL ---
-            if report.time_series.get("time") is not None:
-                st.subheader("Charge système globale")
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=report.time_series["time"],
-                    y=report.time_series.get("queue_length", np.zeros_like(report.time_series["time"])),
-                    mode='lines',
-                    name='Longueur totale'
-                ))
-                fig.update_layout(
-                    title="Évolution de la charge",
-                    xaxis_title="Temps (h)",
-                    yaxis_title="Taille système"
-                )
+                # Graphiques temporels
+                st.subheader("Dynamique des Queues")
+                
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                    subplot_titles=("Longueur des files d'attente", "Temps d'attente par client"))
+
+                colors = ['#EF553B', '#FFA15A'] # Couleurs Plotly
+                
+                # Trace Queue Lengths
+                for i, res in enumerate(report.simulation_results):
+                    if len(res.time_trace) > 0:
+                        fig.add_trace(go.Scatter(
+                            x=res.time_trace, 
+                            y=res.queue_length_trace,
+                            name=f"Queue {i+1} ({moulinette._queue_chain.queues[i].kendall_notation})",
+                            mode='lines',
+                            line=dict(width=2)
+                        ), row=1, col=1)
+
+                # Trace Waiting Times (Scatter)
+                for i, res in enumerate(report.simulation_results):
+                    if len(res.arrival_times) > 0 and len(res.waiting_times) > 0:
+                        # On sous-échantillonne si trop de points pour la performance
+                        step = max(1, len(res.waiting_times) // 500)
+                        fig.add_trace(go.Scatter(
+                            x=res.arrival_times[::step], 
+                            y=res.waiting_times[::step] * 60, # conversion en minutes
+                            name=f"Attente Q{i+1}",
+                            mode='markers',
+                            marker=dict(size=4, opacity=0.5)
+                        ), row=2, col=1)
+
+                fig.update_layout(height=600, showlegend=True)
+                fig.update_yaxes(title_text="Clients", row=1, col=1)
+                fig.update_yaxes(title_text="Minutes", row=2, col=1)
+                fig.update_xaxes(title_text="Temps de simulation (h)", row=2, col=1)
+                
                 st.plotly_chart(fig, use_container_width=True)
 
-            # --- DETAILS PAR QUEUE ---
-            st.subheader("Détails par Queue")
-            for i, r in enumerate(report.simulation_results):
-                with st.expander(f"Queue {i+1} ({r.n_served} servis)"):
-                    st.write(f"Arrivées : {r.n_arrivals}")
-                    st.write(f"Servis   : {r.n_served}")
-                    st.write(f"Rejetés  : {r.n_rejected}")
+            except Exception as e:
+                st.error(f"Erreur durant la simulation: {str(e)}")
+                # Afficher la stacktrace pour le debug
+                import traceback
+                st.code(traceback.format_exc())
 
-                    if len(r.system_times) > 0:
-                        st.write(f"Temps moyen système : {np.mean(r.system_times):.2f}")
-
-                    if len(r.time_trace) > 0:
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(
-                            x=r.time_trace,
-                            y=r.queue_length_trace,
-                            mode='lines',
-                            name=f"Queue {i+1}"
-                        ))
-                        fig.update_layout(
-                            title=f"Queue {i+1} - Charge au cours du temps",
-                            xaxis_title="Temps (h)",
-                            yaxis_title="Longueur queue"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-
-        except Exception as e:
-            st.error(f"Erreur lors de la simulation: {str(e)}")
-
-
-def render_optimization_tab(lambda_rate, mu_rate, buffer_size):
+def render_optimization_tab(mu_rate, buffer_size):
     """Onglet d'optimisation coût/performance."""
     st.header("Optimisation Cout / Performance")
     
@@ -855,7 +912,7 @@ def render_optimization_tab(lambda_rate, mu_rate, buffer_size):
                 st.plotly_chart(fig, use_container_width=True)
 
 
-def render_scaling_tab(mu_rate, buffer_size, current_servers, current_lambda):
+def render_scaling_tab(mu_rate, buffer_size, current_servers):
     """Onglet de recommandations d'auto-scaling."""
     st.header("Recommandations d'Auto-scaling")
     

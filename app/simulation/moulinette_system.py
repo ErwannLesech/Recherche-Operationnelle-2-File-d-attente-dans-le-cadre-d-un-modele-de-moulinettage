@@ -402,8 +402,8 @@ class MoulinetteSystem:
 
     def simulate_evolving(self, arrival_profile, duration: float, step_minutes: float = 5.0):
         """
-        Solution finale : simulation continue avec transfert entre queues.
-        L'état de chaque queue est préservé entre les pas de temps.
+        Simulation continue avec transfert correct entre queues.
+        Correction: les clients qui terminent une queue arrivent IMMÉDIATEMENT dans la suivante.
         """
         import heapq
         from app.models.base_queue import SimulationResults
@@ -423,7 +423,7 @@ class MoulinetteSystem:
         for i, queue in enumerate(self._queue_chain.queues):
             queue_states.append({
                 "event_heap": [],
-                "queue_state": [],  # Liste de (customer_id, service_time, arrival_time)
+                "queue_state": [],
                 "busy_servers": 0,
                 "service_start_times": {},
                 "departure_times": {},
@@ -433,8 +433,7 @@ class MoulinetteSystem:
                 "system_times_list": [],
                 "n_rejected": 0,
                 "customer_counter": 0,
-                "pending_service_times": {},  # Pour stocker les temps de service pré-générés
-                # Pour le traçage
+                "pending_transfers": [],  # NOUVEAU: clients en attente de transfert
                 "time_trace": [],
                 "queue_length_trace": [],
                 "system_size_trace": []
@@ -453,17 +452,40 @@ class MoulinetteSystem:
                 c = queue.c
                 K = queue.K
                 
-                # Générer une arrivée externe pour la première queue uniquement
+                # ================================================================
+                # 1. GÉRER LES TRANSFERTS DEPUIS LA QUEUE PRÉCÉDENTE
+                # ================================================================
+                if i > 0 and queue_states[i-1]["pending_transfers"]:
+                    for transfer_time, old_id in queue_states[i-1]["pending_transfers"]:
+                        if transfer_time < step_end:
+                            # Créer une arrivée dans cette queue
+                            customer_id = state["customer_counter"]
+                            state["customer_counter"] += 1
+                            heapq.heappush(state["event_heap"], (transfer_time, "arrival", customer_id))
+                    
+                    # Vider les transferts traités
+                    queue_states[i-1]["pending_transfers"] = [
+                        (t, cid) for t, cid in queue_states[i-1]["pending_transfers"] if t >= step_end
+                    ]
+                
+                # ================================================================
+                # 2. GÉNÉRER ARRIVÉES EXTERNES (Queue 1 uniquement)
+                # ================================================================
                 if i == 0 and lam > 0:
-                    next_arrival = time + queue.rng.exponential(1 / lam)
-                    if next_arrival < step_end:
-                        customer_id = state["customer_counter"]
-                        state["customer_counter"] += 1
-                        heapq.heappush(state["event_heap"], (next_arrival, "arrival", customer_id))
+                    # Estimer combien d'arrivées dans [time, step_end]
+                    expected_arrivals = lam * step_h
+                    n_arrivals = queue.rng.poisson(expected_arrivals)
+                    
+                    for _ in range(n_arrivals):
+                        arrival_time = time + queue.rng.uniform(0, step_h)
+                        if arrival_time < step_end:
+                            customer_id = state["customer_counter"]
+                            state["customer_counter"] += 1
+                            heapq.heappush(state["event_heap"], (arrival_time, "arrival", customer_id))
                 
-                # Traiter tous les événements dans [time, step_end]
-                departures_this_step = []
-                
+                # ================================================================
+                # 3. TRAITER TOUS LES ÉVÉNEMENTS DANS [time, step_end]
+                # ================================================================
                 while state["event_heap"] and state["event_heap"][0][0] < step_end:
                     event_time, event_type, customer_id = heapq.heappop(state["event_heap"])
                     system_size = len(state["queue_state"]) + state["busy_servers"]
@@ -476,13 +498,7 @@ class MoulinetteSystem:
                         
                         # Client accepté
                         state["accepted_arrivals"].append(event_time)
-                        
-                        # Récupérer ou générer le temps de service
-                        if customer_id in state["pending_service_times"]:
-                            service_time = state["pending_service_times"].pop(customer_id)
-                        else:
-                            service_time = queue._generate_service_times_for_model(1)[0]
-                        
+                        service_time = queue._generate_service_times_for_model(1)[0]
                         state["accepted_service_times"].append(service_time)
                         
                         # Serveur disponible ?
@@ -503,7 +519,13 @@ class MoulinetteSystem:
                     
                     else:  # departure
                         state["busy_servers"] -= 1
-                        departures_this_step.append((event_time, customer_id))
+                        
+                        # ======================================================
+                        # TRANSFERT VERS QUEUE SUIVANTE
+                        # ======================================================
+                        if i + 1 < len(self._queue_chain.queues):
+                            # Ajouter aux transferts en attente
+                            state["pending_transfers"].append((event_time, customer_id))
                         
                         # Servir le prochain client en attente
                         if state["queue_state"]:
@@ -520,37 +542,17 @@ class MoulinetteSystem:
                             
                             heapq.heappush(state["event_heap"], (next_depart, "departure", next_id))
                 
-                # Enregistrer l'état actuel pour le traçage
+                # ================================================================
+                # 4. ENREGISTRER L'ÉTAT POUR LE TRAÇAGE
+                # ================================================================
                 state["time_trace"].append(step_end)
                 state["queue_length_trace"].append(len(state["queue_state"]))
                 state["system_size_trace"].append(len(state["queue_state"]) + state["busy_servers"])
-                
-                # ================================================================
-                # TRANSFERT VERS LA QUEUE SUIVANTE
-                # ================================================================
-                if i + 1 < len(self._queue_chain.queues) and departures_this_step:
-                    next_state = queue_states[i + 1]
-                    next_queue = self._queue_chain.queues[i + 1]
-                    
-                    for dep_time, old_id in departures_this_step:
-                        # Créer un nouveau client dans la queue suivante
-                        new_customer_id = next_state["customer_counter"]
-                        next_state["customer_counter"] += 1
-                        
-                        # Générer son temps de service à l'avance
-                        service_time = next_queue._generate_service_times_for_model(1)[0]
-                        next_state["pending_service_times"][new_customer_id] = service_time
-                        
-                        # Planifier son arrivée
-                        heapq.heappush(
-                            next_state["event_heap"],
-                            (dep_time, "arrival", new_customer_id)
-                        )
             
             time = step_end
 
         # ====================================================================
-        # Construire les résultats finaux
+        # CONSTRUIRE LES RÉSULTATS FINAUX
         # ====================================================================
         sim_results = []
         for i, state in enumerate(queue_states):
@@ -593,17 +595,13 @@ class MoulinetteSystem:
         else:
             report.utilization = 0.0
 
-        # Traces globales (somme des longueurs de queue)
+        # Traces globales
         if sim_results and all(len(r.time_trace) > 0 for r in sim_results):
-            # Utiliser les traces de la dernière queue comme référence temporelle
             report.time_series["time"] = sim_results[-1].time_trace
-            
-            # Sommer les longueurs de queue de toutes les queues
             min_len = min(len(r.queue_length_trace) for r in sim_results)
             total_queue_length = np.zeros(min_len)
             for r in sim_results:
                 total_queue_length += r.queue_length_trace[:min_len]
-            
             report.time_series["queue_length"] = total_queue_length
 
         return report

@@ -1,0 +1,249 @@
+{
+  "timestamp": "20260112_184340",
+  "parameters": {
+    "lambda_rate": 30.0,
+    "mu_rate": 10.0,
+    "n_servers": 4,
+    "cv_squared": 1.0,
+    "n_customers": 2000,
+    "n_runs": 3
+  },
+  "results": [
+    {
+      "Modele": "M/M/1",
+      "Run": 1,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 67.09692705499444,
+      "Temps attente (min)": 66.9942794140857,
+      "Longueur max queue": 1323,
+      "Longueur moy queue": 662.07275,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/M/1",
+      "Run": 2,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 63.3977743473188,
+      "Temps attente (min)": 63.299265216742604,
+      "Longueur max queue": 1297,
+      "Longueur moy queue": 642.0065,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/M/1",
+      "Run": 3,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 68.80404852140771,
+      "Temps attente (min)": 68.70266886723822,
+      "Longueur max queue": 1342,
+      "Longueur moy queue": 662.18725,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/D/1",
+      "Run": 1,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 68.41903486946977,
+      "Temps attente (min)": 68.31903486946979,
+      "Longueur max queue": 1367,
+      "Longueur moy queue": 683.19025,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/D/1",
+      "Run": 2,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 66.52721810452648,
+      "Temps attente (min)": 66.42721810452649,
+      "Longueur max queue": 1342,
+      "Longueur moy queue": 664.26925,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/D/1",
+      "Run": 3,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 66.01363474297362,
+      "Temps attente (min)": 65.91363474297363,
+      "Longueur max queue": 1324,
+      "Longueur moy queue": 659.13325,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/G/1",
+      "Run": 1,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 68.92492721362272,
+      "Temps attente (min)": 68.82207482809537,
+      "Longueur max queue": 1366,
+      "Longueur moy queue": 680.45025,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/G/1",
+      "Run": 2,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 67.26463291972189,
+      "Temps attente (min)": 67.16657175857834,
+      "Longueur max queue": 1357,
+      "Longueur moy queue": 686.102,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/G/1",
+      "Run": 3,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 66.18117855627142,
+      "Temps attente (min)": 66.08142770461508,
+      "Longueur max queue": 1340,
+      "Longueur moy queue": 658.64175,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/M/4",
+      "Run": 1,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.15301750542217046,
+      "Temps attente (min)": 0.05401492234651694,
+      "Longueur max queue": 24,
+      "Longueur moy queue": 1.8835,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    },
+    {
+      "Modele": "M/M/4",
+      "Run": 2,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.14761548723871748,
+      "Temps attente (min)": 0.04907569525518149,
+      "Longueur max queue": 19,
+      "Longueur moy queue": 1.717,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    },
+    {
+      "Modele": "M/M/4",
+      "Run": 3,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.13814038670173123,
+      "Temps attente (min)": 0.03862555987011413,
+      "Longueur max queue": 13,
+      "Longueur moy queue": 1.36125,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    },
+    {
+      "Modele": "M/D/4",
+      "Run": 1,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.12370446119362678,
+      "Temps attente (min)": 0.02370446119362615,
+      "Longueur max queue": 10,
+      "Longueur moy queue": 0.933,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    },
+    {
+      "Modele": "M/D/4",
+      "Run": 2,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.12778763561469872,
+      "Temps attente (min)": 0.02778763561469789,
+      "Longueur max queue": 16,
+      "Longueur moy queue": 1.0855,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    },
+    {
+      "Modele": "M/D/4",
+      "Run": 3,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.12772363352640878,
+      "Temps attente (min)": 0.027723633526407807,
+      "Longueur max queue": 10,
+      "Longueur moy queue": 1.08025,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    },
+    {
+      "Modele": "M/G/4",
+      "Run": 1,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.14935450526935823,
+      "Temps attente (min)": 0.04657762958235885,
+      "Longueur max queue": 13,
+      "Longueur moy queue": 1.57175,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    },
+    {
+      "Modele": "M/G/4",
+      "Run": 2,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.15562230906767552,
+      "Temps attente (min)": 0.053770259951102815,
+      "Longueur max queue": 17,
+      "Longueur moy queue": 1.80425,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    },
+    {
+      "Modele": "M/G/4",
+      "Run": 3,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.15220778394736473,
+      "Temps attente (min)": 0.05155882832547851,
+      "Longueur max queue": 15,
+      "Longueur moy queue": 1.81875,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    }
+  ],
+  "summary": {
+    "M/M/1": {
+      "mean_wait": 66.33207116602217,
+      "std_wait": 2.76189836442253,
+      "mean_system": 66.43291664124031,
+      "mean_queue_length": 655.4221666666666
+    },
+    "M/D/1": {
+      "mean_wait": 66.88662923898995,
+      "std_wait": 1.2667996625310187,
+      "mean_system": 66.98662923898996,
+      "mean_queue_length": 668.86425
+    },
+    "M/G/1": {
+      "mean_wait": 67.35669143042959,
+      "std_wait": 1.380179619136152,
+      "mean_system": 67.45691289653868,
+      "mean_queue_length": 675.0646666666667
+    },
+    "M/M/4": {
+      "mean_wait": 0.04723872582393752,
+      "std_wait": 0.007857414452351505,
+      "mean_system": 0.14625779312087306,
+      "mean_queue_length": 1.6539166666666667
+    },
+    "M/D/4": {
+      "mean_wait": 0.026405243444910617,
+      "std_wait": 0.0023391649457586926,
+      "mean_system": 0.12640524344491144,
+      "mean_queue_length": 1.0329166666666667
+    },
+    "M/G/4": {
+      "mean_wait": 0.05063557261964672,
+      "std_wait": 0.0036841259111365476,
+      "mean_system": 0.1523948660947995,
+      "mean_queue_length": 1.7315833333333333
+    }
+  }
+}
