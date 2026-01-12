@@ -1,10 +1,12 @@
 """
-Module de base pour les modèles de files d'attente - VERSION CORRIGÉE
+Module de base pour les modèles de files d'attente - VERSION CORRIGÉE COMPLÈTE
 
 Corrections apportées:
 1. Génération correcte des temps de service (déterministe pour M/D/*, général pour M/G/*)
 2. Simulation multi-serveurs correcte pour M/M/c, M/D/c, M/G/c
 3. Génération correcte de time_trace et queue_length_trace
+4. Support complet de la capacité K (blocage)
+5. Ajout de la propriété blocking_probability
 """
 
 from abc import ABC, abstractmethod
@@ -48,6 +50,13 @@ class SimulationResults:
     queue_length_trace: np.ndarray = field(default_factory=lambda: np.array([]))
     system_size_trace: np.ndarray = field(default_factory=lambda: np.array([]))
     empirical_metrics: Optional[QueueMetrics] = None
+    
+    @property
+    def blocking_probability(self) -> float:
+        """Calcule la probabilité de blocage empirique."""
+        if self.n_arrivals == 0:
+            return 0.0
+        return self.n_rejected / self.n_arrivals
 
 
 class BaseQueueModel(ABC):
@@ -106,6 +115,12 @@ class BaseQueueModel(ABC):
     def simulate(self, n_customers: int = 1000, max_time: Optional[float] = None) -> SimulationResults:
         pass
     
+    def get_theoretical_metrics(self) -> QueueMetrics:
+        """Retourne les métriques théoriques (avec cache)."""
+        if self._theoretical_metrics is None:
+            self._theoretical_metrics = self.compute_theoretical_metrics()
+        return self._theoretical_metrics
+    
     def _generate_interarrival_times(self, n: int) -> np.ndarray:
         return self.rng.exponential(scale=1/self.lambda_rate, size=n)
     
@@ -113,7 +128,31 @@ class BaseQueueModel(ABC):
         """Génère des temps de service EXPONENTIELS (M/M/*)"""
         return self.rng.exponential(scale=1/self.mu_rate, size=n)
     
+    def compute_empirical_metrics(self, results: SimulationResults) -> QueueMetrics:
+        """Calcule les métriques empiriques à partir des résultats de simulation."""
+        metrics = QueueMetrics()
+        
+        if len(results.system_times) > 0:
+            metrics.W = np.mean(results.system_times)
+            metrics.Wq = np.mean(results.waiting_times)
+            metrics.Ws = np.mean(results.service_times[:len(results.system_times)])
+            
+            lambda_eff = results.n_served / results.departure_times[-1] if len(results.departure_times) > 0 else 0
+            metrics.lambda_eff = lambda_eff
+            metrics.L = lambda_eff * metrics.W
+            metrics.Lq = lambda_eff * metrics.Wq
+            metrics.Ls = lambda_eff * metrics.Ws
+            
+            if results.n_arrivals > 0:
+                metrics.rho = results.n_served / results.n_arrivals * self.rho
+                metrics.Pk = results.n_rejected / results.n_arrivals
+            
+            metrics.throughput = lambda_eff
+        
+        return metrics
+    
     def compute_erlang_b(self) -> float:
+        """Calcule la probabilité que toutes les serveurs soient occupés (Erlang B)."""
         rho = self.lambda_rate / self.mu_rate
         sum_terms = sum((rho ** n) / math.factorial(n) for n in range(self.c))
         last_term = (rho ** self.c) / math.factorial(self.c)
@@ -121,10 +160,14 @@ class BaseQueueModel(ABC):
         return P0
 
     def compute_erlang_c(self) -> float:
-        rho = self.lambda_rate / (self.c * self.mu_rate)
+        """Calcule la probabilité d'attente dans le système (Erlang C)."""
+        rho = self.rho
+        if rho >= 1:
+            return 1.0
+        a = self.lambda_rate / self.mu_rate
         P0 = self.compute_erlang_b()
-        C = ((self.lambda_rate / self.mu_rate) ** self.c / math.factorial(self.c)) * (1 / (1 - rho)) * P0
-        return C
+        C = ((a ** self.c) / math.factorial(self.c)) * (1 / (1 - rho)) * P0
+        return min(C, 1.0)
 
 
 class GenericQueue(BaseQueueModel):
@@ -164,6 +207,17 @@ class GenericQueue(BaseQueueModel):
     def _get_model_description(self) -> str:
         return f"File d'attente basée sur la notation {self.kendall_notation}."
 
+    def connect_to_next_queue(self, next_queue: "GenericQueue", delay: float = 0.0):
+        """
+        Connecte cette file à une autre file d'attente.
+
+        Args:
+            next_queue: File suivante dans la chaîne
+            delay: Délai avant que la file suivante commence à traiter les clients
+        """
+        self.next_queue = next_queue
+        self.delay_to_next = delay
+
     @property
     def C_squared(self) -> float:
         if hasattr(self, 'service_variance') and self.service_variance is not None:
@@ -175,14 +229,13 @@ class GenericQueue(BaseQueueModel):
         Génère les temps de service selon le type de modèle.
         - M/M/* : Exponentiel
         - M/D/* : Déterministe (tous égaux à 1/μ)
-        - M/G/* : Général (on utilise une distribution avec variance contrôlée)
+        - M/G/* : Général (distribution gamma avec variance contrôlée)
         """
         if "M/D/" in self.kendall_notation:
             # Temps de service DÉTERMINISTE
             return np.full(n, 1.0 / self.mu_rate)
         elif "M/G/" in self.kendall_notation:
             # Temps de service GÉNÉRAL avec variance contrôlée
-            # On utilise une distribution gamma pour avoir le bon CV²
             mean = 1.0 / self.mu_rate
             cv_squared = self.C_squared
             
@@ -199,6 +252,8 @@ class GenericQueue(BaseQueueModel):
     def compute_theoretical_metrics(self) -> QueueMetrics:
         if "M/M/1" in self.kendall_notation:
             rho = self.rho
+            if rho >= 1:
+                raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
             Lq = rho ** 2 / (1 - rho)
             Wq = Lq / self.lambda_rate
             Ws = 1 / self.mu_rate
@@ -211,6 +266,8 @@ class GenericQueue(BaseQueueModel):
             )
         elif "M/D/1" in self.kendall_notation:
             rho = self.rho
+            if rho >= 1:
+                raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
             Lq = (rho ** 2) / (2 * (1 - rho))
             Wq = Lq / self.lambda_rate
             Ws = 1 / self.mu_rate
@@ -223,6 +280,8 @@ class GenericQueue(BaseQueueModel):
             )
         elif "M/D/c" in self.kendall_notation:
             rho = self.rho
+            if rho >= 1:
+                raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
             P0 = self.compute_erlang_b()
             C = self.compute_erlang_c()
             Wq_mmc = C / (self.c * self.mu_rate * (1 - rho))
@@ -238,6 +297,8 @@ class GenericQueue(BaseQueueModel):
             )
         elif "M/M/c" in self.kendall_notation:
             rho = self.rho
+            if rho >= 1:
+                raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
             P0 = self.compute_erlang_b()
             C = self.compute_erlang_c()
             Lq = C * rho / (1 - rho)
@@ -252,6 +313,8 @@ class GenericQueue(BaseQueueModel):
             )
         elif "M/G/1" in self.kendall_notation:
             rho = self.rho
+            if rho >= 1:
+                raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
             C_sq = self.C_squared
             Lq = (rho ** 2 * (1 + C_sq)) / (2 * (1 - rho))
             Wq = Lq / self.lambda_rate
@@ -265,6 +328,8 @@ class GenericQueue(BaseQueueModel):
             )
         elif "M/G/c" in self.kendall_notation:
             rho = self.rho
+            if rho >= 1:
+                raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
             P0 = self.compute_erlang_b()
             C = self.compute_erlang_c()
             Wq_mmc = C / (self.c * self.mu_rate * (1 - rho))
@@ -287,7 +352,7 @@ class GenericQueue(BaseQueueModel):
         max_time: Optional[float] = None
     ) -> SimulationResults:
         """
-        Simule la file d'attente avec gestion multi-serveurs correcte.
+        Simule la file d'attente avec gestion multi-serveurs et capacité K.
         """
         # Générer les temps inter-arrivées et de service
         interarrival_times = self._generate_interarrival_times(n_customers)
@@ -296,80 +361,125 @@ class GenericQueue(BaseQueueModel):
         # Calculer les instants d'arrivée
         arrival_times = np.cumsum(interarrival_times)
 
-        # Initialiser les tableaux pour les résultats
-        service_start_times = np.zeros(n_customers)
-        departure_times = np.zeros(n_customers)
-        waiting_times = np.zeros(n_customers)
-        system_times = np.zeros(n_customers)
+        # Filtrer par temps max si spécifié
+        if max_time is not None:
+            mask = arrival_times <= max_time
+            arrival_times = arrival_times[mask]
+            service_times = service_times[:len(arrival_times)]
+            n_customers = len(arrival_times)
 
-        if self.c == 1:
-            # CAS MONO-SERVEUR (M/M/1, M/D/1, M/G/1)
+        if n_customers == 0:
+            return SimulationResults()
+
+        # Initialiser les structures
+        service_start_times_list = []
+        departure_times_list = []
+        waiting_times_list = []
+        system_times_list = []
+        accepted_service_times = []
+        accepted_arrivals = []
+        
+        n_rejected = 0
+        events = []
+        
+        if self.c == 1 and self.K is None:
+            # CAS MONO-SERVEUR SANS CAPACITÉ (M/M/1, M/D/1, M/G/1)
             for i in range(n_customers):
                 if i == 0:
-                    service_start_times[i] = arrival_times[i]
+                    service_start = arrival_times[i]
                 else:
-                    service_start_times[i] = max(arrival_times[i], departure_times[i - 1])
+                    service_start = max(arrival_times[i], departure_times_list[i - 1])
                 
-                departure_times[i] = service_start_times[i] + service_times[i]
-                waiting_times[i] = service_start_times[i] - arrival_times[i]
-                system_times[i] = departure_times[i] - arrival_times[i]
+                departure = service_start + service_times[i]
+                
+                accepted_arrivals.append(arrival_times[i])
+                service_start_times_list.append(service_start)
+                departure_times_list.append(departure)
+                waiting_times_list.append(service_start - arrival_times[i])
+                system_times_list.append(departure - arrival_times[i])
+                accepted_service_times.append(service_times[i])
+                
+                events.append((arrival_times[i], 1, 'arrival'))
+                events.append((departure, -1, 'departure'))
+        
         else:
-            # CAS MULTI-SERVEURS (M/M/c, M/D/c, M/G/c)
-            # Utiliser un heap pour gérer les serveurs disponibles
-            server_available_at = [0.0] * self.c  # Temps où chaque serveur sera libre
+            # CAS MULTI-SERVEURS OU AVEC CAPACITÉ K
+            server_available_at = [0.0] * self.c
             
             for i in range(n_customers):
-                # Trouver le serveur qui sera disponible le plus tôt
-                earliest_available = min(server_available_at)
-                server_idx = server_available_at.index(earliest_available)
+                t_arrival = arrival_times[i]
                 
-                # Le client commence son service dès qu'il arrive ET qu'un serveur est libre
-                service_start_times[i] = max(arrival_times[i], earliest_available)
-                departure_times[i] = service_start_times[i] + service_times[i]
-                waiting_times[i] = service_start_times[i] - arrival_times[i]
-                system_times[i] = departure_times[i] - arrival_times[i]
+                # Libérer les serveurs terminés avant cette arrivée
+                for idx in range(len(server_available_at)):
+                    if server_available_at[idx] <= t_arrival:
+                        if server_available_at[idx] > 0:
+                            events.append((server_available_at[idx], -1, 'departure'))
+                        server_available_at[idx] = 0.0
                 
-                # Mettre à jour le temps de disponibilité du serveur
-                server_available_at[server_idx] = departure_times[i]
+                # Compter clients dans le système
+                n_in_system = sum(1 for t in server_available_at if t > t_arrival)
+                
+                # Vérifier capacité K
+                if self.K is not None and n_in_system >= self.K:
+                    n_rejected += 1
+                    continue
+                
+                # Accepter le client
+                accepted_arrivals.append(t_arrival)
+                accepted_service_times.append(service_times[i])
+                
+                # Trouver le serveur disponible le plus tôt
+                earliest_idx = min(range(self.c), key=lambda idx: server_available_at[idx])
+                service_start = max(t_arrival, server_available_at[earliest_idx])
+                departure = service_start + service_times[i]
+                
+                server_available_at[earliest_idx] = departure
+                
+                service_start_times_list.append(service_start)
+                departure_times_list.append(departure)
+                waiting_times_list.append(service_start - t_arrival)
+                system_times_list.append(departure - t_arrival)
+                
+                events.append((t_arrival, 1, 'arrival'))
+            
+            # Ajouter les départs restants
+            for t in server_available_at:
+                if t > 0:
+                    events.append((t, -1, 'departure'))
 
-        # Calculer la longueur de la file d'attente au cours du temps
-        events = []
-        for t in arrival_times:
-            events.append((t, 'arrival'))
-        for t in departure_times:
-            events.append((t, 'departure'))
+        # Construire les traces temporelles
+        events.sort(key=lambda x: (x[0], -x[1] if x[1] == -1 else x[1]))
         
-        events.sort()
-        current_in_system = 0
         time_trace = []
         queue_length_trace = []
+        system_size_trace = []
+        current_in_system = 0
 
-        for time, event_type in events:
-            if event_type == 'arrival':
-                current_in_system += 1
-            else:
-                current_in_system -= 1
-            
+        for time, delta, event_type in events:
+            current_in_system += delta
             time_trace.append(time)
-            # Longueur de la queue = clients dans le système - serveurs occupés
+            system_size_trace.append(current_in_system)
+            # Longueur de queue = clients dans système - serveurs occupés
             queue_length = max(0, current_in_system - self.c)
             queue_length_trace.append(queue_length)
 
         # Construire les résultats
         results = SimulationResults(
-            arrival_times=arrival_times,
-            service_start_times=service_start_times,
-            departure_times=departure_times,
-            service_times=service_times,
-            waiting_times=waiting_times,
-            system_times=system_times,
-            n_arrivals=len(arrival_times),
-            n_served=len(departure_times),
-            n_rejected=0,
+            arrival_times=np.array(accepted_arrivals),
+            service_start_times=np.array(service_start_times_list),
+            departure_times=np.array(departure_times_list),
+            service_times=np.array(accepted_service_times),
+            waiting_times=np.array(waiting_times_list),
+            system_times=np.array(system_times_list),
+            n_arrivals=n_customers,
+            n_served=len(accepted_arrivals),
+            n_rejected=n_rejected,
             time_trace=np.array(time_trace),
             queue_length_trace=np.array(queue_length_trace),
-            system_size_trace=np.array([current_in_system for _, _ in events])
+            system_size_trace=np.array(system_size_trace)
         )
+        
+        results.empirical_metrics = self.compute_empirical_metrics(results)
 
         return results
 
@@ -390,9 +500,7 @@ class ChainQueue:
 
         for queue in self.queues:
             if arrival_times is not None:
-                # Utiliser les temps de départ de la queue précédente
-                # comme temps d'arrivée pour cette queue
-                # TODO: Implémenter la logique de passage entre files
+                # TODO: Implémenter le passage entre files
                 pass
             
             simulation_result = queue.simulate(n_customers=n_customers, max_time=max_time)
