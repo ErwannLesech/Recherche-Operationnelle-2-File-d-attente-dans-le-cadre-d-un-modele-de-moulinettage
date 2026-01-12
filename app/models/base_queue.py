@@ -346,22 +346,18 @@ class GenericQueue(BaseQueueModel):
         else:
             raise NotImplementedError(f"Les métriques pour {self.kendall_notation} ne sont pas encore implémentées.")
 
+
     def simulate(
         self,
         n_customers: int = 1000,
         max_time: Optional[float] = None
     ) -> SimulationResults:
-        """
-        Simule la file d'attente avec gestion multi-serveurs et capacité K.
-        """
-        # Générer les temps inter-arrivées et de service
+
         interarrival_times = self._generate_interarrival_times(n_customers)
         service_times = self._generate_service_times_for_model(n_customers)
-        
-        # Calculer les instants d'arrivée
+
         arrival_times = np.cumsum(interarrival_times)
 
-        # Filtrer par temps max si spécifié
         if max_time is not None:
             mask = arrival_times <= max_time
             arrival_times = arrival_times[mask]
@@ -371,103 +367,108 @@ class GenericQueue(BaseQueueModel):
         if n_customers == 0:
             return SimulationResults()
 
-        # Initialiser les structures
-        service_start_times_list = []
-        departure_times_list = []
+        # =========================
+        # STRUCTURES
+        # =========================
+        c = self.c
+        K = self.K     # capacité max DANS LE SYSTEME (service + file) si définie
+
+        queue = []                     # file d'attente FIFO (indices de clients)
+        busy_servers = 0               # combien servent actuellement
+        event_heap = []                # (time, type, idx)
+
+        service_start_times = np.zeros(n_customers)
+        departure_times = np.zeros(n_customers)
+
+        accepted_arrivals = []
+        accepted_service_times = []
+
         waiting_times_list = []
         system_times_list = []
-        accepted_service_times = []
-        accepted_arrivals = []
-        
+
         n_rejected = 0
-        events = []
-        
-        if self.c == 1 and self.K is None:
-            # CAS MONO-SERVEUR SANS CAPACITÉ (M/M/1, M/D/1, M/G/1)
-            for i in range(n_customers):
-                if i == 0:
-                    service_start = arrival_times[i]
-                else:
-                    service_start = max(arrival_times[i], departure_times_list[i - 1])
-                
-                departure = service_start + service_times[i]
-                
-                accepted_arrivals.append(arrival_times[i])
-                service_start_times_list.append(service_start)
-                departure_times_list.append(departure)
-                waiting_times_list.append(service_start - arrival_times[i])
-                system_times_list.append(departure - arrival_times[i])
-                accepted_service_times.append(service_times[i])
-                
-                events.append((arrival_times[i], 1, 'arrival'))
-                events.append((departure, -1, 'departure'))
-        
-        else:
-            # CAS MULTI-SERVEURS OU AVEC CAPACITÉ K
-            server_available_at = [0.0] * self.c
-            
-            for i in range(n_customers):
-                t_arrival = arrival_times[i]
-                
-                # Libérer les serveurs terminés avant cette arrivée
-                for idx in range(len(server_available_at)):
-                    if server_available_at[idx] <= t_arrival:
-                        if server_available_at[idx] > 0:
-                            events.append((server_available_at[idx], -1, 'departure'))
-                        server_available_at[idx] = 0.0
-                
-                # Compter clients dans le système
-                n_in_system = sum(1 for t in server_available_at if t > t_arrival)
-                
-                # Vérifier capacité K
-                if self.K is not None and n_in_system >= self.K:
+
+        # =========================
+        # PLANIFIER LES ARRIVÉES
+        # =========================
+        for i, t in enumerate(arrival_times):
+            heapq.heappush(event_heap, (t, "arrival", i))
+
+        # =========================
+        # TRAÇAGE TEMPOREL
+        # =========================
+        time_trace = []
+        system_size_trace = []
+        queue_length_trace = []
+
+        system_size = 0
+
+        # =========================
+        # BOUCLE EVENEMENTIELLE
+        # =========================
+        while event_heap:
+            time, etype, i = heapq.heappop(event_heap)
+
+            if etype == "arrival":
+                # Capacité K ? (K compte service + attente)
+                if K is not None and system_size >= K:
                     n_rejected += 1
                     continue
-                
-                # Accepter le client
-                accepted_arrivals.append(t_arrival)
+
+                system_size += 1
+                accepted_arrivals.append(arrival_times[i])
                 accepted_service_times.append(service_times[i])
-                
-                # Trouver le serveur disponible le plus tôt
-                earliest_idx = min(range(self.c), key=lambda idx: server_available_at[idx])
-                service_start = max(t_arrival, server_available_at[earliest_idx])
-                departure = service_start + service_times[i]
-                
-                server_available_at[earliest_idx] = departure
-                
-                service_start_times_list.append(service_start)
-                departure_times_list.append(departure)
-                waiting_times_list.append(service_start - t_arrival)
-                system_times_list.append(departure - t_arrival)
-                
-                events.append((t_arrival, 1, 'arrival'))
-            
-            # Ajouter les départs restants
-            for t in server_available_at:
-                if t > 0:
-                    events.append((t, -1, 'departure'))
 
-        # Construire les traces temporelles
-        events.sort(key=lambda x: (x[0], -x[1] if x[1] == -1 else x[1]))
-        
-        time_trace = []
-        queue_length_trace = []
-        system_size_trace = []
-        current_in_system = 0
+                if busy_servers < c:
+                    # démarre service
+                    busy_servers += 1
+                    service_start = time
+                    depart_time = service_start + service_times[i]
 
-        for time, delta, event_type in events:
-            current_in_system += delta
+                    service_start_times[i] = service_start
+                    departure_times[i] = depart_time
+
+                    waiting_times_list.append(service_start - arrival_times[i])
+                    system_times_list.append(depart_time - arrival_times[i])
+
+                    heapq.heappush(event_heap, (depart_time, "departure", i))
+
+                else:
+                    # va dans la file
+                    queue.append(i)
+
+            else:  # departure
+                system_size -= 1
+                busy_servers -= 1
+
+                # Si quelqu'un attend => il prend la place immédiatement
+                if queue:
+                    j = queue.pop(0)
+                    busy_servers += 1
+
+                    service_start = time
+                    depart_time = service_start + service_times[j]
+
+                    service_start_times[j] = service_start
+                    departure_times[j] = depart_time
+
+                    waiting_times_list.append(service_start - arrival_times[j])
+                    system_times_list.append(depart_time - arrival_times[j])
+
+                    heapq.heappush(event_heap, (depart_time, "departure", j))
+
+            # --- mise à jour traces ---
             time_trace.append(time)
-            system_size_trace.append(current_in_system)
-            # Longueur de queue = clients dans système - serveurs occupés
-            queue_length = max(0, current_in_system - self.c)
-            queue_length_trace.append(queue_length)
+            system_size_trace.append(system_size)
+            queue_length_trace.append(max(0, system_size - c))
 
-        # Construire les résultats
+        # =========================
+        # BUILD RESULTS
+        # =========================
         results = SimulationResults(
             arrival_times=np.array(accepted_arrivals),
-            service_start_times=np.array(service_start_times_list),
-            departure_times=np.array(departure_times_list),
+            service_start_times=service_start_times[service_start_times > 0],
+            departure_times=departure_times[departure_times > 0],
             service_times=np.array(accepted_service_times),
             waiting_times=np.array(waiting_times_list),
             system_times=np.array(system_times_list),
@@ -476,11 +477,10 @@ class GenericQueue(BaseQueueModel):
             n_rejected=n_rejected,
             time_trace=np.array(time_trace),
             queue_length_trace=np.array(queue_length_trace),
-            system_size_trace=np.array(system_size_trace)
+            system_size_trace=np.array(system_size_trace),
         )
-        
-        results.empirical_metrics = self.compute_empirical_metrics(results)
 
+        results.empirical_metrics = self.compute_empirical_metrics(results)
         return results
 
 
