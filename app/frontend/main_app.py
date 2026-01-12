@@ -648,43 +648,29 @@ def render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size):
     """Onglet de simulation de rush basé sur les Personas."""
     st.header("Simulation - Moulinette EPITA")
 
-    # 1. Configuration du Système (Chaîne de 2 queues)
+    # [CODE EXISTANT: Configuration MoulinetteSystem et Scénario]
     moulinette = MoulinetteSystem()
-    
-    # Configuration des serveurs (capacité totale répartie ou ajustée)
-    # Queue 1 : Pré-tri / Compilation (M/M/c)
     queue1 = GenericQueue(lambda_rate=1, mu_rate=mu_rate1, c=n_servers, kendall_notation=f'M/M/{n_servers}', K=buffer_size)
-    # Queue 2 : Tests / Validation (M/M/1 - goulot d'étranglement typique)
     queue2 = GenericQueue(lambda_rate=1, mu_rate=mu_rate2, c=1, kendall_notation="M/M/1", K=buffer_size)
-    
     moulinette.configure_chain([queue1, queue2])
 
     col1, col2 = st.columns([1, 2])
     
     with col1:
         st.subheader("Scénario")
-        
-        # Choix du mode de simulation
-        sim_mode = st.radio(
-            "Mode de génération de charge",
-            ["Synthétique (Gaussienne)", "Basé sur les Personas (Réaliste)"]
-        )
-        
+        sim_mode = st.radio("Mode de génération de charge", ["Synthétique (Gaussienne)", "Basé sur les Personas (Réaliste)"])
         duration = st.slider("Durée simulation (h)", 1.0, 48.0, 24.0, 1.0)
         
         if sim_mode == "Synthétique (Gaussienne)":
-            base_lambda = st.slider("Taux de base λ (sub/h)", 10.0, 200.0, 50.0, 10.0)
-            peak_multiplier = st.slider("Multiplicateur de pic", 1.5, 10.0, 3.0, 0.5)
-            rush_center = st.slider("Pic du rush (fraction du temps)", 0.1, 0.9, 0.7, 0.1)
-            
-            # Fonction lambda simple (mathématique)
-            def lambda_profile_func(t):
-                x = t / duration
-                width = 0.15
-                rush = np.exp(-((x - rush_center) ** 2) / (2 * width ** 2))
-                return base_lambda * (1 + rush * (peak_multiplier - 1))
-                
-        else: # Mode Personas
+             base_lambda = st.slider("Taux de base λ (sub/h)", 10.0, 200.0, 50.0, 10.0)
+             peak_multiplier = st.slider("Multiplicateur de pic", 1.5, 10.0, 3.0, 0.5)
+             rush_center = st.slider("Pic du rush (fraction)", 0.1, 0.9, 0.7, 0.1)
+             def lambda_profile_func(t):
+                 x = t / duration
+                 width = 0.15
+                 rush = np.exp(-((x - rush_center) ** 2) / (2 * width ** 2))
+                 return base_lambda * (1 + rush * (peak_multiplier - 1))
+        else:
             st.info("La charge est calculée en fonction de la population étudiante définie dans 'Personas'.")
             hours_to_deadline = st.slider("Heures avant deadline (au début)", duration, duration + 48.0, duration, 1.0)
             start_hour = st.slider("Heure de début de simulation", 0, 23, 8)
@@ -714,12 +700,35 @@ def render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size):
                             hours_to_deadline=remaining_time
                         )
                 return total_rate
+        
+        st.divider()
+        st.subheader("Configuration Auto-scaling")
+        enable_autoscaling = st.checkbox("Activer l'auto-scaling dynamique")
+        
+        scaling_policy = None
+        if enable_autoscaling:
+            with st.expander("Paramètres de scaling", expanded=True):
+                as_min_servers = st.number_input("Min Serveurs", 1, n_servers, 1)
+                as_max_servers = st.number_input("Max Serveurs", n_servers, 50, 20)
+                
+                col_up, col_down = st.columns(2)
+                as_up_thresh = col_up.slider("Seuil Scale UP (%)", 50, 95, 80, 5) / 100.0
+                as_down_thresh = col_down.slider("Seuil Scale DOWN (%)", 10, 60, 30, 5) / 100.0
+                
+                # Création de la policy
+                scaling_policy = ScalingPolicy(
+                    scale_up_threshold=as_up_thresh,
+                    scale_down_threshold=as_down_thresh,
+                    min_servers=as_min_servers,
+                    max_servers=as_max_servers,
+                    scale_up_increment=2,
+                    scale_down_increment=1
+                )
 
         save_rush = st.checkbox("Sauvegarder la simulation Rush", value=True)
         run_button = st.button("Lancer la simulation", type="primary")
 
     with col2:
-        # Prévisualisation de la courbe de charge
         st.subheader("Charge prévue λ(t)")
         t_preview = np.linspace(0, duration, 100)
         lambda_values = [lambda_profile_func(t) for t in t_preview]
@@ -751,163 +760,251 @@ def render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size):
         st.plotly_chart(fig_profile, use_container_width=True)
 
     if run_button:
-        with st.spinner("Simulation du système de moulinette en cours..."):
-            try:
-                # Lancement de la simulation via le système évolutif
-                # On passe directement la fonction lambda_profile_func
-                report = moulinette.simulate_evolving(lambda_profile_func, duration)
-
-                # --- AFFICHAGE DES RÉSULTATS (Code existant conservé et nettoyé) ---
+        # 1. EXECUTION STANDARD (BASELINE)
+        with st.spinner("Simulation Baseline (Configuration statique)..."):
+            queue1.c = n_servers
+            report_baseline = moulinette.simulate_evolving(lambda_profile_func, duration, scaling_policy=None)
+        
+        # 2. EXECUTION SCALED (SI ACTIVE)
+        report_scaled = None
+        if enable_autoscaling and scaling_policy:
+            with st.spinner("Simulation avec Auto-scaling..."):
+                # On réinitialise pour le 2eme run
+                moulinette = MoulinetteSystem() 
+                q1_scaled = GenericQueue(lambda_rate=1, mu_rate=mu_rate1, c=n_servers, kendall_notation=f'M/M/{n_servers}', K=buffer_size)
+                q2_scaled = GenericQueue(lambda_rate=1, mu_rate=mu_rate2, c=1, kendall_notation="M/M/1", K=buffer_size)
+                moulinette.configure_chain([q1_scaled, q2_scaled])
                 
-                # KPIs Globaux
-                st.divider()
-                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-                kpi1.metric("Temps Attente Moy.", f"{report.avg_waiting_time*60:.1f} min")
-                kpi2.metric("Queue Max (Clients)", f"{int(max([np.max(r.queue_length_trace) if len(r.queue_length_trace) > 0 else 0 for r in report.simulation_results]))}")
-                kpi3.metric("Taux de Rejet", f"{report.rejection_rate:.2%}")
-                kpi4.metric("Total Servis", f"{sum(r.n_served for r in report.simulation_results)}")
+                report_scaled = moulinette.simulate_evolving(lambda_profile_func, duration, scaling_policy=scaling_policy)
 
-                # Graphiques temporels
-                st.subheader("Dynamique des Queues")
+        # --- AFFICHAGE RESULTATS COMPARES ---
+        st.divider()
+        st.subheader("Résultats de la simulation")
+
+        if report_scaled:
+            # MODE COMPARATIF
+            col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
+            
+            # Helper pour afficher delta
+            def delta_metric(label, val_base, val_scaled, unit=""):
+                delta = val_scaled - val_base
+                delta_color = "normal"
+                if "Attente" in label or "Rejet" in label:
+                    delta_color = "inverse" # Moins c'est mieux
                 
-                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                    subplot_titles=("Longueur des files d'attente", "Temps d'attente par client"))
+                col_kpi1.metric(f"{label} (Base)", f"{val_base:.2f}{unit}")
+                col_kpi2.metric(f"{label} (Auto-scale)", f"{val_scaled:.2f}{unit}", f"{delta:.2f}{unit}", delta_color=delta_color)
 
-                colors = ['#EF553B', '#FFA15A'] # Couleurs Plotly
+            delta_metric("Temps Attente Moy.", report_baseline.avg_waiting_time * 60, report_scaled.avg_waiting_time * 60, " min")
+            delta_metric("Taux Rejet", report_baseline.rejection_rate * 100, report_scaled.rejection_rate * 100, " %")
+            
+            # Coût estimatif (serveur * heures)
+            # Baseline: n_servers * duration
+            # Scaled: somme(server_count_trace * step_hours)
+            step_h = duration / len(report_scaled.time_series["server_count"])
+            avg_servers_scaled = np.mean(report_scaled.time_series["server_count"])
+            col_kpi3.metric("Serveurs Moyens", f"{n_servers}", f"{avg_servers_scaled:.1f}", delta_color="off")
 
-                fig.update_xaxes(
-                    row=1, col=1,
-                    type="linear",
-                    showticklabels=True,
-                    range=[0, duration],
-                    tickmode="linear",
-                    dtick=2
+            # --- GRAPHIQUE AUTO-SCALING ---
+            st.subheader("Dynamique de l'Auto-scaling")
+            
+            # On crée un graph avec 2 axes Y
+            fig_scaling = make_subplots(specs=[[{"secondary_y": True}]])
+            
+            # Axe X commun
+            times = report_scaled.time_series["time"]
+            
+            # Trace 1 : Nombre de serveurs (Area chart)
+            fig_scaling.add_trace(
+                go.Scatter(
+                    x=times, 
+                    y=report_scaled.time_series["server_count"],
+                    name="Nombre de serveurs actifs",
+                    mode='lines',
+                    fill='tozeroy',
+                    line=dict(color='rgba(46, 204, 113, 0.6)'), # Vert
+                    step='hv' # Step line pour montrer les paliers
+                ),
+                secondary_y=False
+            )
+            
+            # Trace 2 : Queue Length Scaled (Ligne)
+            fig_scaling.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=report_scaled.simulation_results[0].queue_length_trace, # Queue 1 length
+                    name="Queue (Avec Scaling)",
+                    mode='lines',
+                    line=dict(color='blue', width=2)
+                ),
+                secondary_y=True
+            )
+
+            # Trace 3 : Queue Length Baseline (Pointillés pour comparaison)
+            if len(report_baseline.time_series.get("time", [])) > 0:
+                 fig_scaling.add_trace(
+                    go.Scatter(
+                        x=report_baseline.simulation_results[0].time_trace,
+                        y=report_baseline.simulation_results[0].queue_length_trace,
+                        name="Queue (Sans Scaling)",
+                        mode='lines',
+                        line=dict(color='red', dash='dot')
+                    ),
+                    secondary_y=True
                 )
-                fig.update_xaxes(
-                    row=2, col=1,
-                    type="linear",
-                    showticklabels=True,
-                    range=[0, duration],
-                    tickmode="linear",
-                    dtick=2
-                )
 
-                # Trace Queue Lengths
-                for i, res in enumerate(report.simulation_results):
-                    if len(res.time_trace) > 0:
-                        fig.add_trace(go.Scatter(
-                            x=res.time_trace, 
-                            y=res.queue_length_trace,
-                            name=f"Queue {i+1} ({moulinette._queue_chain.queues[i].kendall_notation})",
-                            mode='lines',
-                            line=dict(width=2)
-                        ), row=1, col=1)
+            fig_scaling.update_yaxes(title_text="Nombre de Serveurs", secondary_y=False, range=[0, scaling_policy.max_servers + 2])
+            fig_scaling.update_yaxes(title_text="Clients en attente", secondary_y=True)
+            fig_scaling.update_xaxes(title_text="Temps (h)")
+            fig_scaling.update_layout(title="Adaptation des ressources vs Charge", height=500)
+            
+            
+            st.plotly_chart(fig_scaling, use_container_width=True)
 
-                # Trace Waiting Times (Scatter)
-                for i, res in enumerate(report.simulation_results):
-                    if len(res.arrival_times) > 0 and len(res.waiting_times) > 0:
-                        # On sous-échantillonne si trop de points pour la performance
-                        step = max(1, len(res.waiting_times) // 500)
-                        fig.add_trace(go.Scatter(
-                            x=res.arrival_times[::step], 
-                            y=res.waiting_times[::step] * 60, # conversion en minutes
-                            name=f"Attente Q{i+1}",
-                            mode='markers',
-                            marker=dict(size=4, opacity=0.5)
-                        ), row=2, col=1)
+        else:
+            # KPIs Globaux
+            st.divider()
+            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+            kpi1.metric("Temps Attente Moy.", f"{report_baseline.avg_waiting_time*60:.1f} min")
+            kpi2.metric("Queue Max (Clients)", f"{int(max([np.max(r.queue_length_trace) if len(r.queue_length_trace) > 0 else 0 for r in report_baseline.simulation_results]))}")
+            kpi3.metric("Taux de Rejet", f"{report_baseline.rejection_rate:.2%}")
+            kpi4.metric("Total Servis", f"{sum(r.n_served for r in report_baseline.simulation_results)}")
 
-                fig.update_layout(height=600, showlegend=True)
-                fig.update_yaxes(title_text="Clients", row=1, col=1)
-                fig.update_yaxes(title_text="Minutes", row=2, col=1)
-                fig.update_xaxes(title_text="Temps de simulation (h)", row=2, col=1)
-                fig.update_xaxes(title_text="Temps de simulation (h)", row=1, col=1)
-                
-                st.plotly_chart(fig, use_container_width=True)
+            # Graphiques temporels
+            st.subheader("Dynamique des Queues")
+            
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                subplot_titles=("Longueur des files d'attente", "Temps d'attente par client"))
 
-                if save_rush:
-                    sim_dir = Path(__file__).parent.parent.parent / "simulations" / "moulinette_simulations"
-                    sim_dir.mkdir(exist_ok=True)
+            colors = ['#EF553B', '#FFA15A'] # Couleurs Plotly
 
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"rush_simulation_{timestamp}.json"
-                    filepath = sim_dir / filename
+            fig.update_xaxes(
+                row=1, col=1,
+                type="linear",
+                showticklabels=True,
+                range=[0, duration],
+                tickmode="linear",
+                dtick=2
+            )
+            fig.update_xaxes(
+                row=2, col=1,
+                type="linear",
+                showticklabels=True,
+                range=[0, duration],
+                tickmode="linear",
+                dtick=2
+            )
 
-                    # Agrégations globales simples et robustes
-                    total_arrivals = sum(r.n_arrivals for r in report.simulation_results)
-                    total_served = sum(r.n_served for r in report.simulation_results)
-                    total_rejected = sum(r.n_rejected for r in report.simulation_results)
+            # Trace Queue Lengths
+            for i, res in enumerate(report_baseline.simulation_results):
+                if len(res.time_trace) > 0:
+                    fig.add_trace(go.Scatter(
+                        x=res.time_trace, 
+                        y=res.queue_length_trace,
+                        name=f"Queue {i+1} ({moulinette._queue_chain.queues[i].kendall_notation})",
+                        mode='lines',
+                        line=dict(width=2)
+                    ), row=1, col=1)
 
-                    all_waiting = np.concatenate([r.waiting_times for r in report.simulation_results if len(r.waiting_times) > 0]) \
-                        if any(len(r.waiting_times) > 0 for r in report.simulation_results) else np.array([])
+            # Trace Waiting Times (Scatter)
+            for i, res in enumerate(report_baseline.simulation_results):
+                if len(res.arrival_times) > 0 and len(res.waiting_times) > 0:
+                    # On sous-échantillonne si trop de points pour la performance
+                    step = max(1, len(res.waiting_times) // 500)
+                    fig.add_trace(go.Scatter(
+                        x=res.arrival_times[::step], 
+                        y=res.waiting_times[::step] * 60, # conversion en minutes
+                        name=f"Attente Q{i+1}",
+                        mode='markers',
+                        marker=dict(size=4, opacity=0.5)
+                    ), row=2, col=1)
 
-                    all_system = np.concatenate([r.system_times for r in report.simulation_results if len(r.system_times) > 0]) \
-                        if any(len(r.system_times) > 0 for r in report.simulation_results) else np.array([])
+            fig.update_layout(height=600, showlegend=True)
+            fig.update_yaxes(title_text="Clients", row=1, col=1)
+            fig.update_yaxes(title_text="Minutes", row=2, col=1)
+            fig.update_xaxes(title_text="Temps de simulation (h)", row=2, col=1)
+            fig.update_xaxes(title_text="Temps de simulation (h)", row=1, col=1)
+            
+            st.plotly_chart(fig, use_container_width=True)
 
-                    save_data = {
-                        "timestamp": timestamp,
+        if save_rush:
+            sim_dir = Path(__file__).parent.parent.parent / "simulations" / "moulinette_simulations"
+            sim_dir.mkdir(exist_ok=True)
 
-                        # --- paramètres simul —
-                        "rush_parameters": {
-                            "mu_rate_exec": mu_rate1,
-                            "mu_rate_results": mu_rate2,
-                            "n_servers": n_servers,
-                            "buffer_size": buffer_size,
-                            "duration_hours": duration,
-                            "mode": sim_mode
-                        },
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"rush_simulation_{timestamp}.json"
+            filepath = sim_dir / filename
 
-                        # --- résultats globaux —
-                        "system_results": {
-                            "total_arrivals": int(total_arrivals),
-                            "total_served": int(total_served),
-                            "total_rejected": int(total_rejected),
-                            "reject_rate_percent":
-                                float(100 * total_rejected / total_arrivals) if total_arrivals > 0 else 0.0,
-                            "avg_waiting_time_minutes":
-                                float(np.mean(all_waiting) * 60) if len(all_waiting) > 0 else 0.0,
-                            "avg_system_time_minutes":
-                                float(np.mean(all_system) * 60) if len(all_system) > 0 else 0.0
-                        },
+            # Agrégations globales simples et robustes
+            total_arrivals = sum(r.n_arrivals for r in report_baseline.simulation_results)
+            total_served = sum(r.n_served for r in report_baseline.simulation_results)
+            total_rejected = sum(r.n_rejected for r in report_baseline.simulation_results)
 
-                        # --- détails par queue —
-                        "queues": [
-                            {
-                                "index": i + 1,
-                                "kendall": moulinette._queue_chain.queues[i].kendall_notation,
-                                "served": int(r.n_served),
-                                "arrivals": int(r.n_arrivals),
-                                "rejected": int(r.n_rejected),
-                                "avg_waiting_minutes":
-                                    float(np.mean(r.waiting_times) * 60) if len(r.waiting_times) > 0 else 0.0,
-                                "max_queue_length":
-                                    int(np.max(r.queue_length_trace)) if len(r.queue_length_trace) > 0 else 0
-                            }
-                            for i, r in enumerate(report.simulation_results)
-                        ],
+            all_waiting = np.concatenate([r.waiting_times for r in report_baseline.simulation_results if len(r.waiting_times) > 0]) \
+                if any(len(r.waiting_times) > 0 for r in report_baseline.simulation_results) else np.array([])
 
-                        # --- timeline globale si existante —
-                        "timeline": {
-                            "queues": [
-                                {
-                                    "queue": i + 1,
-                                    "time": r.time_trace.tolist() if len(r.time_trace) > 0 else [],
-                                    "queue_length": r.queue_length_trace.tolist() if len(r.queue_length_trace) > 0 else []
-                                }
-                                for i, r in enumerate(report.simulation_results)
-                            ]
-                        }
+            all_system = np.concatenate([r.system_times for r in report_baseline.simulation_results if len(r.system_times) > 0]) \
+                if any(len(r.system_times) > 0 for r in report_baseline.simulation_results) else np.array([])
+
+            save_data = {
+                "timestamp": timestamp,
+
+                # --- paramètres simul —
+                "rush_parameters": {
+                    "mu_rate_exec": mu_rate1,
+                    "mu_rate_results": mu_rate2,
+                    "n_servers": n_servers,
+                    "buffer_size": buffer_size,
+                    "duration_hours": duration,
+                    "mode": sim_mode
+                },
+
+                # --- résultats globaux —
+                "system_results": {
+                    "total_arrivals": int(total_arrivals),
+                    "total_served": int(total_served),
+                    "total_rejected": int(total_rejected),
+                    "reject_rate_percent":
+                        float(100 * total_rejected / total_arrivals) if total_arrivals > 0 else 0.0,
+                    "avg_waiting_time_minutes":
+                        float(np.mean(all_waiting) * 60) if len(all_waiting) > 0 else 0.0,
+                    "avg_system_time_minutes":
+                        float(np.mean(all_system) * 60) if len(all_system) > 0 else 0.0
+                },
+
+                # --- détails par queue —
+                "queues": [
+                    {
+                        "index": i + 1,
+                        "kendall": moulinette._queue_chain.queues[i].kendall_notation,
+                        "served": int(r.n_served),
+                        "arrivals": int(r.n_arrivals),
+                        "rejected": int(r.n_rejected),
+                        "avg_waiting_minutes":
+                            float(np.mean(r.waiting_times) * 60) if len(r.waiting_times) > 0 else 0.0,
+                        "max_queue_length":
+                            int(np.max(r.queue_length_trace)) if len(r.queue_length_trace) > 0 else 0
                     }
+                    for i, r in enumerate(report_baseline.simulation_results)
+                ],
 
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        json.dump(save_data, f, indent=2, ensure_ascii=False)
+                # --- timeline globale si existante —
+                "timeline": {
+                    "queues": [
+                        {
+                            "queue": i + 1,
+                            "time": r.time_trace.tolist() if len(r.time_trace) > 0 else [],
+                            "queue_length": r.queue_length_trace.tolist() if len(r.queue_length_trace) > 0 else []
+                        }
+                        for i, r in enumerate(report_baseline.simulation_results)
+                    ]
+                }
+            }
 
-                    st.success(f"Simulation Rush sauvegardée dans : {filepath}")
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(save_data, f, indent=2, ensure_ascii=False)
 
-            except Exception as e:
-                st.error(f"Erreur durant la simulation: {str(e)}")
-                # Afficher la stacktrace pour le debug
-                import traceback
-                st.code(traceback.format_exc())
+            st.success(f"Simulation Rush sauvegardée dans : {filepath}")
 
 def render_optimization_tab(mu_rate, buffer_size):
     """Onglet d'optimisation coût/performance."""
