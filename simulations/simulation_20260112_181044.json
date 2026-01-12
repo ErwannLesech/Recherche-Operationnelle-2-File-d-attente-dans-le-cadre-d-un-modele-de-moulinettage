@@ -1,0 +1,93 @@
+{
+  "timestamp": "20260112_181044",
+  "parameters": {
+    "lambda_rate": 30.0,
+    "mu_rate": 10.0,
+    "n_servers": 4,
+    "cv_squared": 1.0,
+    "n_customers": 2000,
+    "n_runs": 3
+  },
+  "results": [
+    {
+      "Modele": "M/M/1",
+      "Run": 1,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 65.8082800834307,
+      "Temps attente (min)": 65.70548845914584,
+      "Longueur max queue": 1298,
+      "Longueur moy queue": 652.2755,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/M/1",
+      "Run": 2,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 65.26876188567759,
+      "Temps attente (min)": 65.17141560645551,
+      "Longueur max queue": 1320,
+      "Longueur moy queue": 664.708,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/M/1",
+      "Run": 3,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 69.43337892821839,
+      "Temps attente (min)": 69.33176120972485,
+      "Longueur max queue": 1369,
+      "Longueur moy queue": 678.66325,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Non"
+    },
+    {
+      "Modele": "M/M/4",
+      "Run": 1,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.13117386892427424,
+      "Temps attente (min)": 0.03530524683729898,
+      "Longueur max queue": 14,
+      "Longueur moy queue": 1.28775,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    },
+    {
+      "Modele": "M/M/4",
+      "Run": 2,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.15672705487796104,
+      "Temps attente (min)": 0.056806779632974855,
+      "Longueur max queue": 17,
+      "Longueur moy queue": 2.0385,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    },
+    {
+      "Modele": "M/M/4",
+      "Run": 3,
+      "Clients servis": 2000,
+      "Temps systeme (min)": 0.16132182923425445,
+      "Temps attente (min)": 0.06203532931933103,
+      "Longueur max queue": 15,
+      "Longueur moy queue": 2.2295,
+      "Taux rejet (%)": 0.0,
+      "Stable": "Oui"
+    }
+  ],
+  "summary": {
+    "M/M/1": {
+      "mean_wait": 66.73622175844207,
+      "std_wait": 2.2636093380637,
+      "mean_system": 66.83680696577555,
+      "mean_queue_length": 665.2155833333333
+    },
+    "M/M/4": {
+      "mean_wait": 0.05138245192986829,
+      "std_wait": 0.01416657423822274,
+      "mean_system": 0.1497409176788299,
+      "mean_queue_length": 1.8519166666666667
+    }
+  }
+}
