@@ -22,7 +22,7 @@ from pathlib import Path
 # Ajouter le chemin parent pour les imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from app.models import MM1Queue, MMcQueue, MMcKQueue, MD1Queue, MG1Queue, MDcQueue, MGcQueue
+from app.models.base_queue import GenericQueue, ChainQueue
 from app.personas import PersonaFactory, StudentType
 from app.personas.usage_patterns import AcademicPeriod
 from app.simulation import RushSimulator, MoulinetteSystem, SimulationConfig, ServerConfig
@@ -143,37 +143,47 @@ def main():
 def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
     """Onglet de comparaison des modèles de files d'attente."""
     st.header("Comparaison des modeles de files d'attente")
-    
+
+    # Ensure proper type conversion for user inputs
+    try:
+        lambda_rate = float(lambda_rate)
+        mu_rate = float(mu_rate)
+        n_servers = int(n_servers)
+        buffer_size = int(buffer_size)
+    except ValueError:
+        st.error("Veuillez entrer des valeurs numériques valides pour les paramètres.")
+        return
+
     col1, col2 = st.columns([2, 1])
-    
+
     with col2:
         st.subheader("Selection des modeles")
         st.markdown("**Modeles mono-serveur:**")
         show_mm1 = st.checkbox("M/M/1", value=True, key="th_mm1")
         show_md1 = st.checkbox("M/D/1", value=True, key="th_md1")
         show_mg1 = st.checkbox("M/G/1", value=True, key="th_mg1")
-        
+
         st.markdown("**Modeles multi-serveurs:**")
         show_mmc = st.checkbox("M/M/c", value=True, key="th_mmc")
         show_mdc = st.checkbox("M/D/c", value=True, key="th_mdc")
         show_mgc = st.checkbox("M/G/c", value=True, key="th_mgc")
         show_mmck = st.checkbox("M/M/c/K (capacite limitee)", value=False, key="th_mmck")
-        
+
         cv_squared = st.slider(
             "CV2 service (pour M/G/1 et M/G/c)",
             min_value=0.0, max_value=2.0, value=1.0, step=0.1,
             key="th_cv2"
         )
-    
+
     with col1:
         # Calculer les métriques théoriques pour chaque modèle
         models_data = []
         service_mean = 1.0 / mu_rate
         service_variance = cv_squared * (service_mean ** 2)
-        
+
         # Modèles mono-serveur (condition: lambda < mu)
         if show_mm1 and lambda_rate < mu_rate:
-            queue = MM1Queue(lambda_rate, mu_rate)
+            queue = GenericQueue(lambda_rate, mu_rate, "M/M/1")
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': 'M/M/1',
@@ -184,9 +194,9 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'rho': metrics.rho,
                 'P_blocage': 0.0
             })
-        
+
         if show_md1 and lambda_rate < mu_rate:
-            queue = MD1Queue(lambda_rate, mu_rate)
+            queue = GenericQueue(lambda_rate, mu_rate, "M/D/1")
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': 'M/D/1',
@@ -197,9 +207,9 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'rho': metrics.rho,
                 'P_blocage': 0.0
             })
-        
+
         if show_mg1 and lambda_rate < mu_rate:
-            queue = MG1Queue(lambda_rate, service_mean, service_variance)
+            queue = GenericQueue(lambda_rate, mu_rate, "M/G/1")
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': f'M/G/1 (CV2={cv_squared})',
@@ -210,10 +220,10 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'rho': metrics.rho,
                 'P_blocage': 0.0
             })
-        
+
         # Modèles multi-serveurs (condition: lambda < c*mu)
         if show_mmc and lambda_rate < n_servers * mu_rate:
-            queue = MMcQueue(lambda_rate, mu_rate, n_servers)
+            queue = GenericQueue(lambda_rate, mu_rate, "M/M/c", n_servers)
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': f'M/M/{n_servers}',
@@ -224,9 +234,9 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'rho': metrics.rho,
                 'P_blocage': 0.0
             })
-        
+
         if show_mdc and lambda_rate < n_servers * mu_rate:
-            queue = MDcQueue(lambda_rate, mu_rate, n_servers)
+            queue = GenericQueue(lambda_rate, mu_rate, "M/D/c", n_servers)
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': f'M/D/{n_servers}',
@@ -237,9 +247,9 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'rho': metrics.rho,
                 'P_blocage': 0.0
             })
-        
+
         if show_mgc and lambda_rate < n_servers * mu_rate:
-            queue = MGcQueue(lambda_rate, service_mean, service_variance, n_servers)
+            queue = GenericQueue(lambda_rate, mu_rate, "M/G/c", n_servers)
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': f'M/G/{n_servers} (CV2={cv_squared})',
@@ -250,9 +260,9 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'rho': metrics.rho,
                 'P_blocage': 0.0
             })
-        
+
         if show_mmck:
-            queue = MMcKQueue(lambda_rate, mu_rate, n_servers, buffer_size)
+            queue = GenericQueue(lambda_rate, mu_rate, "M/M/c", n_servers, buffer_size)
             metrics = queue.compute_theoretical_metrics()
             models_data.append({
                 'Modele': f'M/M/{n_servers}/{buffer_size}',
@@ -263,7 +273,7 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
                 'rho': metrics.rho,
                 'P_blocage': metrics.Pk
             })
-        
+
         if models_data:
             df = pd.DataFrame(models_data)
             st.subheader("Metriques theoriques")
@@ -335,23 +345,23 @@ def render_queue_models_tab(lambda_rate, mu_rate, n_servers, buffer_size):
             
             # Modèles mono-serveur (lancés sans condition)
             if sim_mm1:
-                models_config.append(('M/M/1', MM1Queue(lambda_rate, mu_rate), lambda_rate < mu_rate))
+                models_config.append(('M/M/1', GenericQueue(lambda_rate, mu_rate, "M/M/1"), lambda_rate < mu_rate))
             
             if sim_md1:
-                models_config.append(('M/D/1', MD1Queue(lambda_rate, mu_rate), lambda_rate < mu_rate))
+                models_config.append(('M/D/1', GenericQueue(lambda_rate, mu_rate, "M/D/1"), lambda_rate < mu_rate))
             
             if sim_mg1:
-                models_config.append(('M/G/1', MG1Queue(lambda_rate, service_mean, service_variance), lambda_rate < mu_rate))
+                models_config.append(('M/G/1', GenericQueue(lambda_rate, mu_rate, "M/G/1"), lambda_rate < mu_rate))
             
             # Modèles multi-serveurs (lancés sans condition)
             if sim_mmc:
-                models_config.append((f'M/M/{n_servers}', MMcQueue(lambda_rate, mu_rate, n_servers), lambda_rate < n_servers * mu_rate))
+                models_config.append((f'M/M/{n_servers}', GenericQueue(lambda_rate, mu_rate, "M/M/c", n_servers), lambda_rate < n_servers * mu_rate))
             
             if sim_mdc:
-                models_config.append((f'M/D/{n_servers}', MDcQueue(lambda_rate, mu_rate, n_servers), lambda_rate < n_servers * mu_rate))
+                models_config.append((f'M/D/{n_servers}', GenericQueue(lambda_rate, mu_rate, "M/D/c", n_servers), lambda_rate < n_servers * mu_rate))
             
             if sim_mgc:
-                models_config.append((f'M/G/{n_servers}', MGcQueue(lambda_rate, service_mean, service_variance, n_servers), lambda_rate < n_servers * mu_rate))
+                models_config.append((f'M/G/{n_servers}', GenericQueue(lambda_rate, mu_rate, "M/G/c", n_servers), lambda_rate < n_servers * mu_rate))
             
             # Afficher les avertissements pour les systèmes instables
             unstable_models = [name for name, _, is_stable in models_config if not is_stable]
@@ -659,92 +669,39 @@ def render_personas_tab():
 
 def render_rush_simulation_tab(mu_rate, buffer_size):
     """Onglet de simulation de rush."""
-    st.header("Simulation de periode de rush")
-    
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        st.subheader("Configuration du rush")
-        
-        rush_type = st.selectbox(
-            "Type de rush",
-            ["Deadline projet", "Semaine d'examens", "Rush soirée standard"]
-        )
-        
-        base_load = st.slider("Charge de base (λ)", 10, 100, 30)
-        rush_multiplier = st.slider("Multiplicateur rush", 1.0, 5.0, 2.5, 0.1)
-        rush_duration_h = st.slider("Durée du rush (heures)", 1, 24, 4)
-        n_build_servers = st.slider("Serveurs build", 1, 10, 4)
-        n_test_servers = st.slider("Serveurs test", 1, 10, 2)
-        
-        simulate_btn = st.button("Simuler le rush")
-    
-    with col2:
-        if simulate_btn:
-            with st.spinner("Simulation en cours..."):
-                # Configuration serveur
-                server_config = ServerConfig(
-                    n_servers=n_build_servers,
-                    service_rate=mu_rate,
-                    buffer_size=buffer_size
-                )
-                
-                # Configuration simulation
-                config = SimulationConfig(
-                    duration_hours=rush_duration_h,
-                    server_config=server_config,
-                    seed=42
-                )
-                
-                # Creer le simulateur
-                simulator = RushSimulator(config)
-                
-                # Simuler
-                report = simulator.run()
-                
-                # Afficher les resultats
-                st.subheader("Resultats du rush")
-                
-                col_a, col_b, col_c = st.columns(3)
-                col_a.metric("Debit (clients/h)", f"{report.throughput:.1f}")
-                col_b.metric("Temps moyen systeme", f"{report.avg_system_time:.1f} min")
-                col_c.metric("Temps moyen attente", f"{report.avg_waiting_time:.2f} min")
-                
-                col_d, col_e, col_f = st.columns(3)
-                col_d.metric("Utilisation rho", f"{report.utilization:.0%}")
-                col_e.metric("Longueur max queue", f"{report.max_queue_length}")
-                col_f.metric("Taux rejet", f"{report.rejection_rate:.2%}")
-                
-                # Graphique d'évolution
-                st.subheader("Evolution de la charge")
-                
-                times = np.linspace(0, rush_duration_h * 60, 100)
-                
-                # Simuler l'évolution (simplifié)
-                build_loads = []
-                test_loads = []
-                
-                for t in times:
-                    # Charge qui monte puis descend
-                    progress = t / (rush_duration_h * 60)
-                    rush_factor = rush_multiplier * np.sin(np.pi * progress)
-                    
-                    build_load = base_load * (1 + rush_factor)
-                    build_loads.append(build_load / (n_build_servers * mu_rate))
-                    test_loads.append(build_load * 0.9 / (n_test_servers * mu_rate * 0.5))
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=times, y=build_loads, name='ρ Build', fill='tozeroy'))
-                fig.add_trace(go.Scatter(x=times, y=test_loads, name='ρ Test', fill='tozeroy'))
-                fig.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Saturation")
-                fig.add_hline(y=0.7, line_dash="dash", line_color="orange", annotation_text="Optimal")
-                
-                fig.update_layout(
-                    xaxis_title='Temps (min)',
-                    yaxis_title='Utilisation ρ',
-                    height=400
-                )
-                st.plotly_chart(fig, use_container_width=True)
+    st.header("Simulation Rush")
+
+    # Configuration par défaut pour ChainQueue
+    lambda_rate = 30.0  # Taux d'arrivée par défaut
+    n_servers_mmc = 4   # Nombre de serveurs pour MMC
+    n_servers_mm1 = 1   # Nombre de serveurs pour MM1
+
+    # Créer une chaîne de queues MMC -> MM1
+    chain_queue = ChainQueue([
+        GenericQueue(lambda_rate, mu_rate, "M/M/C"),
+        GenericQueue(lambda_rate, mu_rate, "M/M/1")
+    ])
+
+    # Lancer la simulation
+    n_customers = 1000  # Nombre de clients à simuler
+    with st.spinner("Simulation en cours..."):
+        try:
+            result = chain_queue.simulate(n_customers=n_customers)
+
+            # Afficher les résultats
+            st.subheader("Résultats de la simulation")
+            st.metric("Clients servis", result.n_served)
+            st.metric("Temps moyen dans le système (min)", f"{np.mean(result.system_times):.2f}")
+            st.metric("Temps moyen d'attente (min)", f"{np.mean(result.waiting_times):.2f}")
+
+            # Graphique de la longueur de la queue
+            st.subheader("Longueur de la queue au cours du temps")
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=result.time_trace, y=result.queue_length_trace, mode='lines', name='Longueur de queue'))
+            fig.update_layout(title="Longueur de queue", xaxis_title="Temps", yaxis_title="Longueur de queue")
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Erreur lors de la simulation: {str(e)}")
 
 
 def render_optimization_tab(lambda_rate, mu_rate, buffer_size):
@@ -813,12 +770,12 @@ def render_optimization_tab(lambda_rate, mu_rate, buffer_size):
                 
                 for n in servers_range:
                     try:
-                        queue = MMcKQueue(lambda_rate, mu_rate, n, buffer_size)
+                        queue = GenericQueue(lambda_rate, mu_rate, "M/M/c")
                         metrics = queue.compute_theoretical_metrics()
                         wq = metrics.Wq
                         
                         server_cost = n * cost_per_server + fixed_cost
-                        wait_cost = wq * penalty_per_min * lambda_rate * 60
+                        wait_cost = wq * penalty_per_min * lambda_rate * 60;
                         
                         costs.append(server_cost + wait_cost)
                         waiting_times.append(wq)
@@ -984,7 +941,7 @@ def render_heatmaps_tab(mu_rate, buffer_size):
                 for i, n_servers in enumerate(server_range):
                     for j, lambda_rate in enumerate(lambda_range):
                         try:
-                            queue = MMcKQueue(lambda_rate, mu_rate, n_servers, buffer_size)
+                            queue = GenericQueue(lambda_rate, mu_rate, "M/M/c")
                             metrics = queue.compute_theoretical_metrics()
                             
                             if metric == "Temps d'attente Wq":

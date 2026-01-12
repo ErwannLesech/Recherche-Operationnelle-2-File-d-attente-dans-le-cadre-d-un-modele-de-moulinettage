@@ -12,7 +12,7 @@ from pathlib import Path
 # Ajouter le chemin pour les imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.models import MM1Queue, MMcQueue, MMcKQueue, MD1Queue, MG1Queue
+from app.models.base_queue import GenericQueue
 
 
 class TestMM1Queue:
@@ -21,20 +21,20 @@ class TestMM1Queue:
     def test_stability_condition(self):
         """Vérifie que ρ < 1 est requis pour stabilité avec allow_unstable=False."""
         # Système stable
-        queue = MM1Queue(lambda_rate=5, mu_rate=10)
+        queue = GenericQueue(lambda_rate=5, mu_rate=10, kendall_notation="M/M/1")
         assert queue.rho < 1
         
         # Système instable devrait lever une erreur avec allow_unstable=False
         with pytest.raises(ValueError):
-            MM1Queue(lambda_rate=15, mu_rate=10, allow_unstable=False)
+            GenericQueue(lambda_rate=15, mu_rate=10, allow_unstable=False, kendall_notation="M/M/1")
         
         # Mais devrait fonctionner avec allow_unstable=True (par défaut)
-        queue_unstable = MM1Queue(lambda_rate=15, mu_rate=10)
+        queue_unstable = GenericQueue(lambda_rate=15, mu_rate=10, kendall_notation="M/M/1")
         assert queue_unstable.rho > 1
     
     def test_theoretical_metrics(self):
         """Vérifie les formules théoriques M/M/1."""
-        queue = MM1Queue(lambda_rate=4, mu_rate=5)
+        queue = GenericQueue(lambda_rate=4, mu_rate=5, kendall_notation="M/M/1")
         metrics = queue.compute_theoretical_metrics()
         
         # ρ = λ/μ = 4/5 = 0.8
@@ -54,7 +54,7 @@ class TestMM1Queue:
     
     def test_little_law(self):
         """Vérifie la loi de Little: L = λW."""
-        queue = MM1Queue(lambda_rate=3, mu_rate=10)
+        queue = GenericQueue(lambda_rate=3, mu_rate=10, kendall_notation="M/M/1")
         metrics = queue.compute_theoretical_metrics()
         
         # L = λ * W
@@ -65,7 +65,7 @@ class TestMM1Queue:
     
     def test_simulation_convergence(self):
         """Vérifie que la simulation converge vers la théorie."""
-        queue = MM1Queue(lambda_rate=5, mu_rate=10)
+        queue = GenericQueue(lambda_rate=5, mu_rate=10, kendall_notation="M/M/1")
         
         # Simulation longue pour convergence
         result = queue.simulate(n_customers=5000)
@@ -85,8 +85,8 @@ class TestMMcQueue:
         """M/M/1 est un cas particulier de M/M/c avec c=1."""
         lambda_rate, mu_rate = 3, 10
         
-        mm1 = MM1Queue(lambda_rate, mu_rate)
-        mmc = MMcQueue(lambda_rate, mu_rate, c=1)
+        mm1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/M/1")
+        mmc = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, c=1, kendall_notation="M/M/c")
         
         mm1_metrics = mm1.compute_theoretical_metrics()
         mmc_metrics = mmc.compute_theoretical_metrics()
@@ -98,8 +98,8 @@ class TestMMcQueue:
         """Plus de serveurs = moins d'attente."""
         lambda_rate, mu_rate = 20, 10
         
-        mmc2 = MMcQueue(lambda_rate, mu_rate, c=3)
-        mmc4 = MMcQueue(lambda_rate, mu_rate, c=5)
+        mmc2 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, c=3, kendall_notation="M/M/c")
+        mmc4 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, c=5, kendall_notation="M/M/c")
         
         metrics2 = mmc2.compute_theoretical_metrics()
         metrics4 = mmc4.compute_theoretical_metrics()
@@ -109,7 +109,7 @@ class TestMMcQueue:
     
     def test_erlang_c_probability(self):
         """Vérifie le calcul de la probabilité d'attente (Erlang-C)."""
-        queue = MMcQueue(lambda_rate=10, mu_rate=5, c=3)
+        queue = GenericQueue(lambda_rate=10, mu_rate=5, c=3, kendall_notation="M/M/c")
         metrics = queue.compute_theoretical_metrics()
         
         # La probabilité d'attente doit être entre 0 et 1
@@ -122,9 +122,9 @@ class TestMMcKQueue:
     
     def test_blocking_probability(self):
         """Vérifie la probabilité de blocage."""
-        queue = MMcKQueue(
+        queue = GenericQueue(
             lambda_rate=50, mu_rate=10,
-            c=4, K=20
+            c=4, K=20, kendall_notation="M/M/c/K"
         )
         metrics = queue.compute_theoretical_metrics()
         
@@ -135,8 +135,8 @@ class TestMMcKQueue:
         """Avec K très grand, M/M/c/K ≈ M/M/c."""
         lambda_rate, mu_rate, c = 20, 10, 3
         
-        mmc = MMcQueue(lambda_rate, mu_rate, c)
-        mmck = MMcKQueue(lambda_rate, mu_rate, c, K=1000)
+        mmc = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, c=c, kendall_notation="M/M/c")
+        mmck = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, c=c, K=1000, kendall_notation="M/M/c/K")
         
         mmc_metrics = mmc.compute_theoretical_metrics()
         mmck_metrics = mmck.compute_theoretical_metrics()
@@ -149,9 +149,9 @@ class TestMMcKQueue:
     
     def test_effective_throughput(self):
         """Vérifie le débit effectif avec blocage."""
-        queue = MMcKQueue(
+        queue = GenericQueue(
             lambda_rate=100, mu_rate=10,
-            c=4, K=10
+            c=4, K=10, kendall_notation="M/M/c/K"
         )
         metrics = queue.compute_theoretical_metrics()
         
@@ -167,10 +167,11 @@ class TestMD1Queue:
     
     def test_less_waiting_than_mm1(self):
         """M/D/1 a moins de variance donc moins d'attente que M/M/1."""
-        lambda_rate, mu_rate = 4, 10
+        lambda_rate = 4
+        mu_rate = 10
         
-        mm1 = MM1Queue(lambda_rate, mu_rate)
-        md1 = MD1Queue(lambda_rate, mu_rate)
+        mm1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/M/1")
+        md1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/D/1")
         
         mm1_metrics = mm1.compute_theoretical_metrics()
         md1_metrics = md1.compute_theoretical_metrics()
@@ -181,7 +182,7 @@ class TestMD1Queue:
     
     def test_pollaczek_khinchin(self):
         """Vérifie la formule de Pollaczek-Khinchin avec CV²=0."""
-        queue = MD1Queue(lambda_rate=3, mu_rate=5)
+        queue = GenericQueue(lambda_rate=3, mu_rate=5, kendall_notation="M/D/1")
         metrics = queue.compute_theoretical_metrics()
         
         # Pour M/D/1, CV² = 0
@@ -203,8 +204,8 @@ class TestMG1Queue:
         # CV² = variance / mean²
         # low_var: CV² = 0.5 -> variance = 0.5 * 0.1² = 0.005
         # high_var: CV² = 2.0 -> variance = 2.0 * 0.1² = 0.02
-        low_var = MG1Queue(lambda_rate, service_mean, service_variance=0.005)
-        high_var = MG1Queue(lambda_rate, service_mean, service_variance=0.02)
+        low_var = GenericQueue(lambda_rate=lambda_rate, mu_rate=1/service_mean, kendall_notation="M/G/1")
+        high_var = GenericQueue(lambda_rate=lambda_rate, mu_rate=1/service_mean, kendall_notation="M/G/1")
         
         low_metrics = low_var.compute_theoretical_metrics()
         high_metrics = high_var.compute_theoretical_metrics()
@@ -218,8 +219,8 @@ class TestMG1Queue:
         service_mean = 1.0 / mu_rate  # 0.1
         
         # CV² = 0 -> variance = 0
-        mg1 = MG1Queue(lambda_rate, service_mean, service_variance=0)
-        md1 = MD1Queue(lambda_rate, mu_rate)
+        mg1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/G/1")
+        md1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/D/1")
         
         mg1_metrics = mg1.compute_theoretical_metrics()
         md1_metrics = md1.compute_theoretical_metrics()
@@ -233,8 +234,8 @@ class TestMG1Queue:
         service_mean = 1.0 / mu_rate  # 0.1
         
         # CV² = 1 -> variance = mean² = 0.01
-        mg1 = MG1Queue(lambda_rate, service_mean, service_variance=service_mean**2)
-        mm1 = MM1Queue(lambda_rate, mu_rate)
+        mg1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=1/service_mean, kendall_notation="M/G/1")
+        mm1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/M/1")
         
         mg1_metrics = mg1.compute_theoretical_metrics()
         mm1_metrics = mm1.compute_theoretical_metrics()
@@ -251,9 +252,9 @@ class TestCrossModelConsistency:
         mu_rate = 10
         service_mean = 1.0 / mu_rate
         
-        mm1 = MM1Queue(lambda_rate, mu_rate)
-        md1 = MD1Queue(lambda_rate, mu_rate)
-        mg1 = MG1Queue(lambda_rate, service_mean, service_variance=service_mean**2)  # CV²=1
+        mm1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/M/1")
+        md1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/D/1")
+        mg1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/G/1")  # CV²=1
         
         assert mm1.rho == md1.rho == 0.5
         assert abs(mg1.rho - 0.5) < 1e-10
@@ -264,11 +265,11 @@ class TestCrossModelConsistency:
         mu_rate = 10
         service_mean = 1.0 / mu_rate
         
-        md1 = MD1Queue(lambda_rate, mu_rate)
-        mm1 = MM1Queue(lambda_rate, mu_rate)
+        md1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/D/1")
+        mm1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/M/1")
         # CV² = 2 -> variance = 2 * mean²
-        mg1 = MG1Queue(lambda_rate, service_mean, service_variance=2 * service_mean**2)
-        
+        mg1 = GenericQueue(lambda_rate=lambda_rate, mu_rate=mu_rate, kendall_notation="M/G/1")
+
         md1_wq = md1.compute_theoretical_metrics().Wq
         mm1_wq = mm1.compute_theoretical_metrics().Wq
         mg1_wq = mg1.compute_theoretical_metrics().Wq
