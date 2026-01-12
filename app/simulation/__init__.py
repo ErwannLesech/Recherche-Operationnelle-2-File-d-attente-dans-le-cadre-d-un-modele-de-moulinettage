@@ -1,6 +1,6 @@
 # Module de simulation
-from .rush_simulator import RushSimulator, SimulationConfig, SimulationReport
-from .moulinette_system import MoulinetteSystem
+from .rush_simulator import RushSimulator
+from .moulinette_system import MoulinetteSystem, SimulationConfig, SimulationReport
 from app.config.server_config import ServerConfig, ServerConfigDefaults, DEFAULT_SERVER_CONFIG
 
 __all__ = [

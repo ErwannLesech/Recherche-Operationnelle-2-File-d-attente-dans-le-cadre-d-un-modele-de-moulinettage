@@ -1,36 +1,13 @@
 """
-Module de représentation du système de moulinette complet.
+Module de représentation du système Moulinette complet.
 
-Ce module encapsule toute l'architecture de la moulinette EPITA
-en un objet cohérent permettant:
-- Configuration centralisée
-- Simulation de bout en bout
-- Analyse de performance
-- Optimisation
+Ce module ne se limite plus à un modèle théorique :
+il permet maintenant de simuler des chaînes de files d'attente
+avec des arrivées pouvant être:
 
-Architecture modélisée:
-══════════════════════════════════════════════════════════════
-                        MOULINETTE EPITA
-══════════════════════════════════════════════════════════════
-
-  Étudiants                                      Résultats
-  ┌──────┐                                       ┌──────┐
-  │ SUP  │──┐                                ┌──▶│ Pass │
-  └──────┘  │                                │   └──────┘
-  ┌──────┐  │    ┌─────────┐   ┌─────────┐   │   ┌──────┐
-  │ SPÉ  │──┼───▶│ Buffer  │──▶│ Runners │───┼──▶│ Fail │
-  └──────┘  │    │ (Queue) │   │ (c srv) │   │   └──────┘
-  ┌──────┐  │    └─────────┘   └─────────┘   │   ┌──────┐
-  │ ING1 │──┤         K              μ       └──▶│ Blck │
-  └──────┘  │                                    └──────┘
-  ┌──────┐  │                                     
-  │ ING2 │──┤    λ(t) varie selon:
-  └──────┘  │    - Heure du jour
-  ┌──────┐  │    - Jour de la semaine  
-  │ ING3 │──┘    - Proximité deadline
-  └──────┘       - Type d'étudiant
-
-══════════════════════════════════════════════════════════════
+- Fixes (λ constant)
+- Évolutives (λ(t) variable dans le temps)
+  → permet de simuler des rushs, variations journalières, effets deadline…
 
 Auteurs: ERO2 Team Markov Moulinette Configurators - EPITA
 """
@@ -40,13 +17,108 @@ from typing import Dict, List, Optional, Any
 import numpy as np
 from enum import Enum
 
-from ..models import MMcKQueue, MMcQueue
-from ..models.base_queue import QueueMetrics
+from ..models.base_queue import GenericQueue, ChainQueue, QueueMetrics, SimulationResults
 from ..personas import Persona, PersonaFactory, StudentType
 from ..personas.usage_patterns import (
     UsagePattern, PatternFactory, AcademicCalendar, DeadlineEvent
 )
 from app.config.server_config import ServerConfig, ServerConfigDefaults, DEFAULT_SERVER_CONFIG
+
+
+@dataclass
+class SimulationConfig:
+    """
+    Configuration d'une simulation.
+    
+    Définit les paramètres de la simulation:
+    - Durée et granularité temporelle
+    - Personas à inclure
+    - Pattern d'utilisation
+    - Configuration serveur
+    """
+    duration_hours: float = 24.0          # Durée de simulation
+    time_step_minutes: float = 15.0       # Pas de temps pour analyse
+    
+    # Personas
+    personas: Dict[StudentType, Persona] = field(
+        default_factory=PersonaFactory.create_all_personas
+    )
+    
+    # Pattern temporel
+    usage_pattern: UsagePattern = field(
+        default_factory=PatternFactory.create_default_pattern
+    )
+    
+    # Configuration serveur
+    server_config: ServerConfig = field(default_factory=ServerConfig)
+    
+    # Paramètres de simulation
+    n_simulation_runs: int = 10           # Répétitions Monte Carlo
+    seed: Optional[int] = 42              # Graine aléatoire
+    
+    # Options
+    include_weekend: bool = False
+    start_hour: int = 0
+    start_day: int = 0  # 0=lundi
+    
+    # Deadline optionnelle
+    deadline_at_hour: Optional[float] = None
+
+@dataclass
+class SimulationReport:
+    """
+    Rapport détaillé d'une simulation.
+    
+    Contient toutes les métriques et recommandations.
+    """
+    # Configuration
+    config: SimulationConfig = None
+    
+    # Métriques théoriques
+    theoretical_metrics: QueueMetrics = None
+    
+    # Résultats de simulation
+    simulation_results: List[SimulationResults] = field(default_factory=list)
+    
+    # Métriques agrégées
+    avg_waiting_time: float = 0.0
+    std_waiting_time: float = 0.0
+    avg_system_time: float = 0.0
+    max_queue_length: int = 0
+    avg_queue_length: float = 0.0
+    rejection_rate: float = 0.0
+    throughput: float = 0.0
+    utilization: float = 0.0
+    
+    # Traces temporelles (moyennées)
+    time_series: Dict[str, np.ndarray] = field(default_factory=dict)
+    
+    # Analyse des pics
+    peak_hours: List[int] = field(default_factory=list)
+    peak_load: float = 0.0
+    
+    # Recommandations
+    recommendations: List[str] = field(default_factory=list)
+    optimal_servers: int = 0
+    estimated_cost: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convertit le rapport en dictionnaire."""
+        return {
+            'avg_waiting_time': self.avg_waiting_time,
+            'std_waiting_time': self.std_waiting_time,
+            'avg_system_time': self.avg_system_time,
+            'max_queue_length': self.max_queue_length,
+            'avg_queue_length': self.avg_queue_length,
+            'rejection_rate': self.rejection_rate,
+            'throughput': self.throughput,
+            'utilization': self.utilization,
+            'peak_hours': self.peak_hours,
+            'peak_load': self.peak_load,
+            'optimal_servers': self.optimal_servers,
+            'estimated_cost': self.estimated_cost,
+            'recommendations': self.recommendations,
+        }
 
 
 class ScalingMode(Enum):
@@ -215,14 +287,18 @@ class MoulinetteSystem:
     
     def __init__(self, config: Optional[MoulinetteConfig] = None):
         """
-        Initialise le système.
+        Initialise le système avec une chaîne de queues par défaut (MMC -> MM1).
         
         Args:
             config: Configuration (défaut si None)
         """
         self.config = config or MoulinetteConfig()
-        self._queue_model: Optional[MMcKQueue] = None
         self._state_history: List[SystemState] = []
+
+        # Configuration par défaut : MMC -> MM1
+        mmc_queue = GenericQueue(lambda_rate=5, mu_rate=10, c=3, kendall_notation="M/M/c")
+        mm1_queue = GenericQueue(lambda_rate=5, mu_rate=10, kendall_notation="M/M/1")
+        self._queue_chain = ChainQueue([mmc_queue, mm1_queue])
     
     def configure(
         self,
@@ -285,31 +361,259 @@ class MoulinetteSystem:
         
         return self
     
+    def configure_chain(self, queue_chain: List[GenericQueue]) -> 'MoulinetteSystem':
+        """
+        Configure une chaîne de queues pour la moulinette.
+
+        Args:
+            queue_chain: Liste de queues génériques représentant la chaîne.
+
+        Returns:
+            self pour chaînage
+        """
+        self._queue_chain = ChainQueue(queue_chain)
+        return self
+
+    def simulate_fixed(self, arrival_rate: float, duration: float) -> SimulationReport:
+        """
+        Simule la chaîne avec un taux d'arrivée constant λ.
+
+        Args:
+            arrival_rate: λ constant
+            duration: durée en heures
+
+        Returns:
+            SimulationReport
+        """
+        metrics: SimulationResults = self._queue_chain.simulate(
+            arrival_rate=arrival_rate,
+            duration=duration
+        )
+
+        report = SimulationReport()
+        report.simulation_results = [metrics]
+        report.avg_waiting_time = np.mean(metrics.waiting_times) if len(metrics.waiting_times) > 0 else 0.0
+        report.avg_system_time  = np.mean(metrics.system_times) if len(metrics.system_times) > 0 else 0.0
+        report.avg_queue_length = np.mean(metrics.queue_length_trace) if len(metrics.queue_length_trace) > 0 else 0.0
+        report.rejection_rate   = metrics.n_rejected / metrics.n_arrivals if metrics.n_arrivals > 0 else 0.0
+        report.throughput       = metrics.n_served / duration  # durée en heures
+        report.utilization      = np.mean(metrics.system_size_trace / self._queue_chain.total_servers())  # approximation
+        return report
+
+    def simulate_evolving(self, arrival_profile, duration: float, step_minutes: float = 5.0):
+        """
+        Simulation continue avec transfert correct entre queues.
+        Correction: les clients qui terminent une queue arrivent IMMÉDIATEMENT dans la suivante.
+        """
+        import heapq
+        from app.models.base_queue import SimulationResults
+        
+        step_h = step_minutes / 60.0
+        time = 0.0
+
+        def resolve_lambda(t):
+            if callable(arrival_profile):
+                return arrival_profile(t)
+            else:
+                arr = [p for p in arrival_profile if p[0] <= t]
+                return arr[-1][1] if arr else arrival_profile[0][1]
+
+        # États persistants pour chaque queue
+        queue_states = []
+        for i, queue in enumerate(self._queue_chain.queues):
+            queue_states.append({
+                "event_heap": [],
+                "queue_state": [],
+                "busy_servers": 0,
+                "service_start_times": {},
+                "departure_times": {},
+                "accepted_arrivals": [],
+                "accepted_service_times": [],
+                "waiting_times_list": [],
+                "system_times_list": [],
+                "n_rejected": 0,
+                "customer_counter": 0,
+                "pending_transfers": [],  # NOUVEAU: clients en attente de transfert
+                "time_trace": [],
+                "queue_length_trace": [],
+                "system_size_trace": []
+            })
+
+        # Boucle principale
+        while time < duration:
+            lam = resolve_lambda(time)
+            step_end = min(time + step_h, duration)
+            
+            # ====================================================================
+            # Traiter chaque queue
+            # ====================================================================
+            for i, queue in enumerate(self._queue_chain.queues):
+                state = queue_states[i]
+                c = queue.c
+                K = queue.K
+                
+                # ================================================================
+                # 1. GÉRER LES TRANSFERTS DEPUIS LA QUEUE PRÉCÉDENTE
+                # ================================================================
+                if i > 0 and queue_states[i-1]["pending_transfers"]:
+                    for transfer_time, old_id in queue_states[i-1]["pending_transfers"]:
+                        if transfer_time < step_end:
+                            # Créer une arrivée dans cette queue
+                            customer_id = state["customer_counter"]
+                            state["customer_counter"] += 1
+                            heapq.heappush(state["event_heap"], (transfer_time, "arrival", customer_id))
+                    
+                    # Vider les transferts traités
+                    queue_states[i-1]["pending_transfers"] = [
+                        (t, cid) for t, cid in queue_states[i-1]["pending_transfers"] if t >= step_end
+                    ]
+                
+                # ================================================================
+                # 2. GÉNÉRER ARRIVÉES EXTERNES (Queue 1 uniquement)
+                # ================================================================
+                if i == 0 and lam > 0:
+                    # Estimer combien d'arrivées dans [time, step_end]
+                    expected_arrivals = lam * step_h
+                    n_arrivals = queue.rng.poisson(expected_arrivals)
+                    
+                    for _ in range(n_arrivals):
+                        arrival_time = time + queue.rng.uniform(0, step_h)
+                        if arrival_time < step_end:
+                            customer_id = state["customer_counter"]
+                            state["customer_counter"] += 1
+                            heapq.heappush(state["event_heap"], (arrival_time, "arrival", customer_id))
+                
+                # ================================================================
+                # 3. TRAITER TOUS LES ÉVÉNEMENTS DANS [time, step_end]
+                # ================================================================
+                while state["event_heap"] and state["event_heap"][0][0] < step_end:
+                    event_time, event_type, customer_id = heapq.heappop(state["event_heap"])
+                    system_size = len(state["queue_state"]) + state["busy_servers"]
+                    
+                    if event_type == "arrival":
+                        # Vérifier capacité
+                        if K is not None and system_size >= K:
+                            state["n_rejected"] += 1
+                            continue
+                        
+                        # Client accepté
+                        state["accepted_arrivals"].append(event_time)
+                        service_time = queue._generate_service_times_for_model(1)[0]
+                        state["accepted_service_times"].append(service_time)
+                        
+                        # Serveur disponible ?
+                        if state["busy_servers"] < c:
+                            # Service immédiat
+                            state["busy_servers"] += 1
+                            state["service_start_times"][customer_id] = event_time
+                            depart_time = event_time + service_time
+                            state["departure_times"][customer_id] = depart_time
+                            
+                            state["waiting_times_list"].append(0.0)
+                            state["system_times_list"].append(service_time)
+                            
+                            heapq.heappush(state["event_heap"], (depart_time, "departure", customer_id))
+                        else:
+                            # Mettre en file d'attente
+                            state["queue_state"].append((customer_id, service_time, event_time))
+                    
+                    else:  # departure
+                        state["busy_servers"] -= 1
+                        
+                        # ======================================================
+                        # TRANSFERT VERS QUEUE SUIVANTE
+                        # ======================================================
+                        if i + 1 < len(self._queue_chain.queues):
+                            # Ajouter aux transferts en attente
+                            state["pending_transfers"].append((event_time, customer_id))
+                        
+                        # Servir le prochain client en attente
+                        if state["queue_state"]:
+                            next_id, next_service_time, next_arrival_time = state["queue_state"].pop(0)
+                            state["busy_servers"] += 1
+                            
+                            state["service_start_times"][next_id] = event_time
+                            next_depart = event_time + next_service_time
+                            state["departure_times"][next_id] = next_depart
+                            
+                            wait_time = event_time - next_arrival_time
+                            state["waiting_times_list"].append(wait_time)
+                            state["system_times_list"].append(next_depart - next_arrival_time)
+                            
+                            heapq.heappush(state["event_heap"], (next_depart, "departure", next_id))
+                
+                # ================================================================
+                # 4. ENREGISTRER L'ÉTAT POUR LE TRAÇAGE
+                # ================================================================
+                state["time_trace"].append(step_end)
+                state["queue_length_trace"].append(len(state["queue_state"]))
+                state["system_size_trace"].append(len(state["queue_state"]) + state["busy_servers"])
+            
+            time = step_end
+
+        # ====================================================================
+        # CONSTRUIRE LES RÉSULTATS FINAUX
+        # ====================================================================
+        sim_results = []
+        for i, state in enumerate(queue_states):
+            sim_results.append(
+                SimulationResults(
+                    arrival_times=np.array(state["accepted_arrivals"]),
+                    service_start_times=np.array(list(state["service_start_times"].values())),
+                    departure_times=np.array(list(state["departure_times"].values())),
+                    service_times=np.array(state["accepted_service_times"]),
+                    waiting_times=np.array(state["waiting_times_list"]),
+                    system_times=np.array(state["system_times_list"]),
+                    n_arrivals=len(state["accepted_arrivals"]) + state["n_rejected"],
+                    n_served=len(state["accepted_arrivals"]),
+                    n_rejected=state["n_rejected"],
+                    time_trace=np.array(state["time_trace"]),
+                    queue_length_trace=np.array(state["queue_length_trace"]),
+                    system_size_trace=np.array(state["system_size_trace"])
+                )
+            )
+
+        # Créer le rapport
+        report = SimulationReport()
+        report.simulation_results = sim_results
+        
+        # Métriques globales
+        valid_wait = [np.mean(r.waiting_times) for r in sim_results if len(r.waiting_times) > 0]
+        valid_sys = [np.mean(r.system_times) for r in sim_results if len(r.system_times) > 0]
+        valid_ql = [np.mean(r.queue_length_trace) for r in sim_results if len(r.queue_length_trace) > 0]
+        
+        report.avg_waiting_time = np.mean(valid_wait) if valid_wait else 0.0
+        report.avg_system_time = np.mean(valid_sys) if valid_sys else 0.0
+        report.avg_queue_length = np.mean(valid_ql) if valid_ql else 0.0
+        report.rejection_rate = np.mean([r.n_rejected / r.n_arrivals if r.n_arrivals > 0 else 0.0 for r in sim_results])
+        report.throughput = sum(r.n_served for r in sim_results) / duration
+        
+        total_servers = self._queue_chain.total_servers()
+        valid_util = [r for r in sim_results if len(r.system_size_trace) > 0]
+        if valid_util:
+            report.utilization = np.mean([np.mean(r.system_size_trace) / total_servers for r in valid_util])
+        else:
+            report.utilization = 0.0
+
+        # Traces globales
+        if sim_results and all(len(r.time_trace) > 0 for r in sim_results):
+            report.time_series["time"] = sim_results[-1].time_trace
+            min_len = min(len(r.queue_length_trace) for r in sim_results)
+            total_queue_length = np.zeros(min_len)
+            for r in sim_results:
+                total_queue_length += r.queue_length_trace[:min_len]
+            report.time_series["queue_length"] = total_queue_length
+
+        return report
+
     def get_queue_model(
         self,
         arrival_rate: Optional[float] = None
-    ) -> MMcKQueue:
+    ):
         """
-        Retourne le modèle de file d'attente.
-        
-        Args:
-            arrival_rate: Taux d'arrivée (calcul automatique si None)
-            
-        Returns:
-            Modèle M/M/c/K configuré
+        Cette méthode est désormais obsolète car la chaîne de queues est utilisée.
         """
-        if arrival_rate is None:
-            # Calculer le taux moyen
-            arrival_rate = self._compute_average_arrival_rate()
-        
-        sc = self.config.server_config
-        
-        return MMcKQueue(
-            lambda_rate=arrival_rate,
-            mu_rate=sc.service_rate,
-            c=sc.n_servers,
-            K=sc.buffer_size
-        )
+        raise NotImplementedError("Cette méthode n'est plus utilisée. Configurez une chaîne de queues avec configure_chain().")
     
     def _compute_average_arrival_rate(self) -> float:
         """Calcule le taux d'arrivée moyen global."""
@@ -325,64 +629,52 @@ class MoulinetteSystem:
         arrival_rate: Optional[float] = None
     ) -> QueueMetrics:
         """
-        Calcule les métriques théoriques.
-        
+        Calcule les métriques théoriques en utilisant la chaîne de queues configurée.
+
         Args:
-            arrival_rate: Taux d'arrivée (auto si None)
-            
+            arrival_rate: Taux d'arrivée moyen (utilisé pour la simulation).
+
         Returns:
-            QueueMetrics théoriques
+            QueueMetrics agrégées de la chaîne de queues.
         """
-        model = self.get_queue_model(arrival_rate)
-        return model.compute_theoretical_metrics()
+        if not hasattr(self, '_queue_chain'):
+            raise ValueError("La chaîne de queues n'est pas configurée.")
+
+        # Utiliser la chaîne de queues pour calculer les métriques
+        metrics = self._queue_chain.simulate(arrival_rate, duration=1.0)  # Durée fictive pour obtenir les métriques
+        return metrics
     
     def analyze_stability(self) -> Dict[str, Any]:
         """
-        Analyse la stabilité du système.
-        
-        Vérifie si le système peut absorber la charge
-        dans différents scénarios.
-        
-        Returns:
-            Dict avec analyse de stabilité
+        Analyse la stabilité du système en utilisant ChainQueue.
         """
-        sc = self.config.server_config
-        capacity = sc.total_capacity
-        
-        # Calculer les taux pour différents scénarios
         scenarios = {
             'normal': self._compute_average_arrival_rate(),
             'peak': self._compute_peak_arrival_rate(),
             'deadline_rush': self._compute_deadline_rush_rate(),
         }
-        
+
         results = {
-            'capacity': capacity,
+            'capacity': self._queue_chain.compute_theoretical_metrics().rho,  # Utilisation globale
             'scenarios': {}
         }
-        
+
         for name, lambda_rate in scenarios.items():
-            rho = lambda_rate / capacity if capacity > 0 else float('inf')
-            stable = rho < 1
-            
-            if stable:
-                model = MMcKQueue(lambda_rate, sc.service_rate, sc.n_servers, sc.buffer_size)
-                metrics = model.compute_theoretical_metrics()
-                wq = metrics.Wq
-                pk = metrics.Pk
-            else:
-                wq = float('inf')
-                pk = 1.0
-            
-            results['scenarios'][name] = {
-                'arrival_rate': lambda_rate,
-                'utilization': min(rho, 1.0),
-                'stable': stable,
-                'avg_waiting_time': wq,
-                'rejection_rate': pk,
-                'servers_needed': int(np.ceil(lambda_rate / sc.service_rate * 1.3))
-            }
-        
+            try:
+                self._queue_chain.update_arrival_rate(lambda_rate)
+                metrics = self._queue_chain.compute_theoretical_metrics()
+                results['scenarios'][name] = {
+                    'arrival_rate': lambda_rate,
+                    'utilization': metrics.rho,
+                    'stable': metrics.rho < 1,
+                    'avg_waiting_time': metrics.Wq,
+                    'rejection_rate': metrics.Pk,
+                }
+            except Exception as e:
+                results['scenarios'][name] = {
+                    'error': str(e)
+                }
+
         return results
     
     def _compute_peak_arrival_rate(self) -> float:
@@ -404,136 +696,54 @@ class MoulinetteSystem:
     
     def get_scaling_recommendations(
         self,
-        target_waiting_time: float = 0.1,  # 6 min max
-        target_rejection_rate: float = 0.01,  # 1% max
+        target_waiting_time: float = 0.1,
+        target_rejection_rate: float = 0.01,
         budget_per_hour: Optional[float] = None
     ) -> Dict[str, Any]:
         """
-        Génère des recommandations de scaling.
-        
-        Args:
-            target_waiting_time: Temps d'attente cible (heures)
-            target_rejection_rate: Taux de rejet cible
-            budget_per_hour: Budget horaire max
-            
-        Returns:
-            Dict avec recommandations détaillées
+        Génère des recommandations de scaling en utilisant ChainQueue.
         """
-        sc = self.config.server_config
-        
-        # Taux de pic
-        peak_lambda = self._compute_peak_arrival_rate()
-        rush_lambda = self._compute_deadline_rush_rate()
-        
         recommendations = {
             'current': {
-                'servers': sc.n_servers,
-                'capacity': sc.total_capacity,
-                'hourly_cost': sc.get_hourly_cost()
+                'servers': self.config.server_config.n_servers,
+                'capacity': self._queue_chain.compute_theoretical_metrics().rho,
             },
-            'scenarios': {},
-            'recommendations': []
+            'scenarios': {}
         }
-        
-        # Analyser différents scénarios
+
         for scenario, lambda_rate in [
             ('normal', self._compute_average_arrival_rate()),
-            ('peak', peak_lambda),
-            ('rush', rush_lambda)
+            ('peak', self._compute_peak_arrival_rate()),
         ]:
-            # Trouver le nombre optimal de serveurs
-            optimal_c = self._find_optimal_servers(
-                lambda_rate,
-                target_waiting_time,
-                target_rejection_rate
-            )
-            
-            # Calculer les métriques avec optimal
-            if optimal_c > 0:
-                model = MMcKQueue(
-                    lambda_rate, sc.service_rate, optimal_c, sc.buffer_size
-                )
-                metrics = model.compute_theoretical_metrics()
-            else:
-                metrics = None
-            
+            self._queue_chain.update_arrival_rate(lambda_rate)
+            metrics = self._queue_chain.compute_theoretical_metrics()
             recommendations['scenarios'][scenario] = {
                 'arrival_rate': lambda_rate,
-                'optimal_servers': optimal_c,
-                'current_utilization': lambda_rate / sc.total_capacity if sc.total_capacity > 0 else 0,
-                'optimal_utilization': lambda_rate / (optimal_c * sc.service_rate) if optimal_c > 0 else 0,
-                'estimated_waiting': metrics.Wq * 60 if metrics else float('inf'),  # minutes
-                'estimated_rejection': metrics.Pk if metrics else 1.0,
-                'hourly_cost': optimal_c * sc.cost_per_server_hour
+                'utilization': metrics.rho,
+                'avg_waiting_time': metrics.Wq,
+                'rejection_rate': metrics.Pk,
             }
-        
-        # Générer recommandations textuelles
-        rush_optimal = recommendations['scenarios']['rush']['optimal_servers']
-        normal_optimal = recommendations['scenarios']['normal']['optimal_servers']
-        
-        if rush_optimal > sc.n_servers:
-            recommendations['recommendations'].append(
-                f"🔴 Insuffisant pour les rushs: Prévoir {rush_optimal} serveurs "
-                f"(actuellement {sc.n_servers})"
-            )
-        
-        if normal_optimal < sc.n_servers:
-            savings = (sc.n_servers - normal_optimal) * sc.cost_per_server_hour
-            recommendations['recommendations'].append(
-                f"💰 Économie possible: Réduire à {normal_optimal} serveurs "
-                f"en période normale (économie: {savings:.2f}€/h)"
-            )
-        
-        if rush_optimal > normal_optimal + 2:
-            recommendations['recommendations'].append(
-                f"📊 Auto-scaling recommandé: Varier entre {normal_optimal} "
-                f"et {rush_optimal} serveurs selon la charge"
-            )
-        
-        # Politique de scaling suggérée
-        recommendations['suggested_policy'] = {
-            'mode': 'scheduled' if rush_optimal > normal_optimal + 2 else 'fixed',
-            'min_servers': max(1, normal_optimal - 1),
-            'max_servers': min(sc.max_servers, rush_optimal + 2),
-            'scheduled': {
-                # Heures creuses
-                **{h: normal_optimal for h in range(2, 8)},
-                # Heures normales
-                **{h: normal_optimal for h in [8, 9, 10, 11, 12, 13]},
-                # Heures de pointe
-                **{h: int((normal_optimal + rush_optimal) / 2) for h in [14, 15, 16, 17]},
-                # Soirée
-                **{h: rush_optimal for h in [20, 21, 22, 23, 0, 1]},
-            }
-        }
-        
+
         return recommendations
-    
+
     def _find_optimal_servers(
         self,
         lambda_rate: float,
         target_wq: float,
         target_pk: float
     ) -> int:
-        """Trouve le nombre optimal de serveurs."""
-        sc = self.config.server_config
-        mu = sc.service_rate
-        K = sc.buffer_size
-        
-        # Minimum pour stabilité
-        c_min = max(1, int(np.ceil(lambda_rate / mu)))
-        
-        for c in range(c_min, sc.max_servers + 1):
-            try:
-                model = MMcKQueue(lambda_rate, mu, c, K)
-                metrics = model.compute_theoretical_metrics()
-                
-                if metrics.Wq <= target_wq and metrics.Pk <= target_pk:
-                    return c
-            except:
-                continue
-        
-        return sc.max_servers
+        """
+        Trouve le nombre optimal de serveurs en utilisant ChainQueue.
+        """
+        for c in range(1, self.config.server_config.max_servers + 1):
+            self._queue_chain.update_servers(c)
+            self._queue_chain.update_arrival_rate(lambda_rate)
+            metrics = self._queue_chain.compute_theoretical_metrics()
+
+            if metrics.Wq <= target_wq and metrics.Pk <= target_pk:
+                return c
+
+        return self.config.server_config.max_servers
     
     def estimate_cost(
         self,
@@ -596,63 +806,28 @@ class MoulinetteSystem:
         metric: str = 'avg_waiting_time'
     ) -> Dict[str, Any]:
         """
-        Génère les données pour une heatmap de paramètres.
-        
-        Utile pour visualiser l'impact des hyperparamètres
-        sur les performances.
-        
-        Args:
-            param1_name: Premier paramètre à varier
-            param1_range: Valeurs du premier paramètre
-            param2_name: Second paramètre à varier
-            param2_range: Valeurs du second paramètre
-            metric: Métrique à mesurer
-            
-        Returns:
-            Dict avec données de heatmap
+        Génère les données pour une heatmap en utilisant ChainQueue.
         """
-        sc = self.config.server_config
-        base_lambda = self._compute_average_arrival_rate()
-        
         if param1_range is None:
             param1_range = list(range(1, 11))
         if param2_range is None:
             param2_range = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-        
-        # Matrice de résultats
+
         results = np.zeros((len(param1_range), len(param2_range)))
-        
+
         for i, p1 in enumerate(param1_range):
             for j, p2 in enumerate(param2_range):
-                # Configurer les paramètres
-                if param1_name == 'n_servers':
-                    c = p1
-                else:
-                    c = sc.n_servers
-                
-                if param2_name == 'arrival_rate_factor':
-                    lambda_rate = base_lambda * p2
-                else:
-                    lambda_rate = base_lambda
-                
-                # Calculer la métrique
-                try:
-                    model = MMcKQueue(
-                        lambda_rate, sc.service_rate, c, sc.buffer_size
-                    )
-                    metrics = model.compute_theoretical_metrics()
-                    
-                    if metric == 'avg_waiting_time':
-                        results[i, j] = metrics.Wq * 60  # en minutes
-                    elif metric == 'rejection_rate':
-                        results[i, j] = metrics.Pk * 100  # en %
-                    elif metric == 'utilization':
-                        results[i, j] = metrics.rho * 100  # en %
-                    else:
-                        results[i, j] = getattr(metrics, metric, 0)
-                except:
-                    results[i, j] = np.nan
-        
+                self._queue_chain.update_servers(p1)
+                self._queue_chain.update_arrival_rate(self._compute_average_arrival_rate() * p2)
+                metrics = self._queue_chain.compute_theoretical_metrics()
+
+                if metric == 'avg_waiting_time':
+                    results[i, j] = metrics.Wq * 60
+                elif metric == 'rejection_rate':
+                    results[i, j] = metrics.Pk * 100
+                elif metric == 'utilization':
+                    results[i, j] = metrics.rho * 100
+
         return {
             'param1_name': param1_name,
             'param1_values': param1_range,

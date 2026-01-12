@@ -1,0 +1,224 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Queue Model Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests",
+				"-p",
+				"'test_queue_models.py'"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run All Tests",
+			"type": "shell",
+			"command": "/usr/bin/python3",
+			"args": [
+				"-m",
+				"unittest",
+				"discover",
+				"-s",
+				"tests"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		}
+	]
+}
