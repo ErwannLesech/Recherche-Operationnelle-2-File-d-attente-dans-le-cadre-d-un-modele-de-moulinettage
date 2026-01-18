@@ -139,7 +139,7 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
-    st.markdown('<p class="main-header">🎯 Moulinette Simulator</p>', unsafe_allow_html=True)
+    st.markdown('<p class="main-header">Moulinette Simulator</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Optimisation des files d\'attente pour la moulinette EPITA - Projet ERO2</p>', unsafe_allow_html=True)
     
     # Sidebar pour les paramètres globaux
@@ -184,11 +184,11 @@ def main():
     
     # Onglets principaux
     tabs = st.tabs([
-        "📊 Scénario 1: Waterfall",
-        "💾 Backup",
-        "👥 Scénario 2: Channels & Dams",
-        "💰 Optimisation Coût/QoS",
-        "📈 Auto-Scaling"
+        "Scénario 1: Waterfall",
+        "Backup",
+        "Scénario 2: Channels & Dams",
+        "Optimisation Coût/QoS",
+        "Auto-Scaling"
     ])
     
     with tabs[0]:
@@ -212,7 +212,7 @@ def main():
 
 def render_waterfall_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1: int, K2: int, file2_model: str):
     """Scénario 1: Modèle Waterfall avec files infinies puis finies."""
-    st.header("📊 Scénario 1: Modèle Waterfall")
+    st.header("Scénario 1: Modèle Waterfall")
     
     st.markdown("""
     <div class="scenario-box">
@@ -224,7 +224,7 @@ def render_waterfall_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, 
 
     
     # Configuration de la simulation
-    st.subheader("⚙️ Configuration de la Simulation")
+    st.subheader("Configuration de la Simulation")
     
     col_config1, col_config2, col_config3 = st.columns(3)
     
@@ -253,7 +253,7 @@ def render_waterfall_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, 
     st.divider()
     
     # Section analyse théorique
-    st.subheader("📐 Analyse Théorique des Files")
+    st.subheader("Analyse Théorique des Files")
     
     col1, col2 = st.columns(2)
     
@@ -280,7 +280,7 @@ def render_waterfall_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, 
             st.success(f"✓ Système stable (ρ₁ = {rho1:.2%} < 100%)")
         else:
             if capacity_mode == "Files finies (K limité)":
-                st.warning(f"⚠️ ρ₁ = {rho1:.2%} ≥ 100% mais stable grâce au buffer fini K₁={K1}")
+                st.warning(f"ρ₁ = {rho1:.2%} ≥ 100% mais stable grâce au buffer fini K₁={K1}")
             else:
                 st.error(f"✗ Système instable (ρ₁ = {rho1:.2%} ≥ 100%)")
         
@@ -934,7 +934,7 @@ def simulate_waterfall_with_backup(
 
 def render_backup_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1: int, K2: int):
     """Scénario 2: Impact du backup sur les pages blanches."""
-    st.header("💾 Mécanismes de Backup")
+    st.header("Mécanismes de Backup")
     
     st.markdown("""
     <div class="scenario-box">
@@ -1248,7 +1248,7 @@ def render_backup_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1:
 
 def render_channels_dams_tab(mu_rate1: float, n_servers: int, K1: int):
     """Onglet Channels & Dams pour populations différenciées."""
-    st.header("👥 Scénario 2: Channels & Dams")
+    st.header("Scénario 2: Channels & Dams")
     
     # Créer les personas
     personas = PersonaFactory.create_all_personas()
@@ -1275,13 +1275,13 @@ def render_channels_dams_tab(mu_rate1: float, n_servers: int, K1: int):
             peak_arrival = max(persona.get_arrival_rate(h) for h in range(24))
             
             with col1:
-                st.markdown("**📊 Caractéristiques**")
+                st.markdown("**Caractéristiques**")
                 st.write(f"• Effectif: **{persona.population_size}** utilisateurs")
-                st.write(f"• Type de flux: **{'🔥 Burst' if persona.variance_coefficient > 0.5 else '🌊 Continu'}**")
+                st.write(f"• Type de flux: **{'Burst' if persona.variance_coefficient > 0.5 else 'Continu'}**")
                 st.write(f"• Variance: {persona.variance_coefficient:.2f}")
             
             with col2:
-                st.markdown("**⏱️ Taux d'arrivée**")
+                st.markdown("**Taux d'arrivée**")
                 st.write(f"• Base: **{persona.base_submission_rate:.2f}** tags/h/user")
                 st.write(f"• Moyen (14h): **{avg_arrival_rate:.0f}** tags/h total")
                 st.write(f"• Peak: **{peak_arrival:.0f}** tags/h total")
@@ -1291,7 +1291,7 @@ def render_channels_dams_tab(mu_rate1: float, n_servers: int, K1: int):
                 st.write(f"• Vitesse: **{service_rate:.1f}** jobs/min/serveur")
                 st.write(f"• Complexité: {persona.avg_test_complexity:.2f}")
                 if persona.student_type == StudentType.PREPA:
-                    st.write("• ⚠️ Rendus groupés (burst 15 min)")
+                    st.write("• Rendus groupés (burst 15 min)")
     
     # Graphique comparatif des patterns
     st.markdown("### Comparaison des patterns d'arrivée (24h)")
@@ -1417,13 +1417,13 @@ def render_channels_dams_tab(mu_rate1: float, n_servers: int, K1: int):
             # Ordre par défaut
             default_order = ["Admin/Assistants", "Ingénieur", "Prépa (SUP/SPE)"]
             
-            priority_1 = st.selectbox("🥇 Priorité 1 (Plus haute)", available_personas, 
+            priority_1 = st.selectbox("Priorité 1 (Plus haute)", available_personas, 
                                       index=available_personas.index(default_order[0]))
             remaining_1 = [p for p in available_personas if p != priority_1]
-            priority_2 = st.selectbox("🥈 Priorité 2", remaining_1, 
+            priority_2 = st.selectbox("Priorité 2", remaining_1, 
                                       index=remaining_1.index(default_order[1]) if default_order[1] in remaining_1 else 0)
             remaining_2 = [p for p in remaining_1 if p != priority_2]
-            priority_3 = st.selectbox("🥉 Priorité 3 (Plus basse)", remaining_2)
+            priority_3 = st.selectbox("Priorité 3 (Plus basse)", remaining_2)
             
             priority_order = [priority_1, priority_2, priority_3]
         
@@ -1431,8 +1431,7 @@ def render_channels_dams_tab(mu_rate1: float, n_servers: int, K1: int):
             st.markdown("**Résumé**")
             st.write("Les jobs sont traités dans l'ordre:")
             for i, p in enumerate(priority_order, 1):
-                emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
-                st.write(f"{emoji} {i}. {p}")
+                st.write(f"{i}. {p}")
         
         strategy_config = {
             'type': 'priority',
@@ -1879,7 +1878,7 @@ def run_all_strategies_comparison(personas, total_servers, duration_hours, start
         st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
         
         # Recommandation
-        st.markdown("### 💡 Recommandation")
+        st.markdown("### Recommandation")
         
         if prio_avg < sep_avg and prio_avg < total_avg_wait:
             st.success("✅ **File avec Priorités** offre les meilleures performances globales tout en favorisant les populations critiques.")
@@ -2017,7 +2016,7 @@ def analyze_separate_queues_theoretical(personas, config):
 
 def render_optimization_tab(mu_rate: float, n_servers: int, buffer_size: int):
     """Onglet d'optimisation coût/performance."""
-    st.header("💰 Optimisation Coût / Qualité de Service")
+    st.header("Optimisation Coût / Qualité de Service")
     
     st.markdown("""
     <div class="formula-box">
@@ -2220,7 +2219,7 @@ def run_optimization(lambda_rate, alpha, cost_server, cost_reject, cost_wait,
 
 def render_autoscaling_tab(mu_rate1: float, mu_rate2: float, n_servers: int, K1: int, K2: int):
     """Onglet des stratégies d'auto-scaling."""
-    st.header("📈 Stratégies d'Auto-Scaling")
+    st.header("Stratégies d'Auto-Scaling")
     
     st.markdown("""
     <div class="scenario-box">
