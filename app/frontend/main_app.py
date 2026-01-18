@@ -2,10 +2,13 @@
 Application Streamlit pour la simulation de la moulinette EPITA.
 
 Interface interactive permettant de:
-- Visualiser les différents modèles de files d'attente
-- Simuler des périodes de rush
-- Analyser les coûts et l'optimisation
+- Visualiser le modèle Waterfall (files infinies/finies)
+- Simuler les mécanismes de backup et leur impact
+- Analyser les populations différenciées (Channels & Dams)
+- Optimiser coût/qualité de service
 - Obtenir des recommandations de scaling
+
+Basé sur le rapport de projet ERO2 - Janvier 2026
 
 Lancer avec: streamlit run app/frontend/main_app.py
 """
@@ -18,11 +21,13 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import sys
 from pathlib import Path
+from typing import Callable, Dict, List, Tuple, Optional
+import math
 
 # Ajouter le chemin parent pour les imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from app.models.base_queue import GenericQueue, ChainQueue
+from app.models.base_queue import GenericQueue, ChainQueue, QueueMetrics, SimulationResults
 from app.personas import PersonaFactory, StudentType
 from app.personas.usage_patterns import AcademicPeriod
 from app.simulation import RushSimulator, MoulinetteSystem, SimulationConfig, ServerConfig
@@ -30,6 +35,29 @@ from app.optimization import CostOptimizer, ScalingAdvisor, CostModel, ScalingPo
 import json
 from datetime import datetime
 import os
+
+
+def apply_dark_theme(fig):
+    """Applique un thème sombre aux graphiques Plotly pour améliorer la lisibilité."""
+    fig.update_layout(
+        plot_bgcolor='#1e1e1e',
+        paper_bgcolor='#2d2d2d',
+        font=dict(color='#e0e0e0'),
+        xaxis=dict(
+            gridcolor='#404040',
+            zerolinecolor='#404040'
+        ),
+        yaxis=dict(
+            gridcolor='#404040',
+            zerolinecolor='#404040'
+        ),
+        legend=dict(
+            bgcolor='rgba(45, 45, 45, 0.8)',
+            bordercolor='#404040',
+            borderwidth=1
+        )
+    )
+    return fig
 
 
 def run_app():
@@ -41,7 +69,7 @@ def main():
     """Application principale."""
     st.set_page_config(
         page_title="Moulinette Simulator - EPITA",
-        page_icon="M",
+        page_icon="🎯",
         layout="wide",
         initial_sidebar_state="expanded"
     )
@@ -54,7 +82,13 @@ def main():
         font-weight: bold;
         color: #1f77b4;
         text-align: center;
-        margin-bottom: 1rem;
+        margin-bottom: 0.5rem;
+    }
+    .sub-header {
+        font-size: 1rem;
+        color: #666;
+        text-align: center;
+        margin-bottom: 2rem;
     }
     .metric-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -62,524 +96,730 @@ def main():
         border-radius: 10px;
         color: white;
     }
+    .scenario-box {
+        background: #2b3e50;
+        border-left: 4px solid #1f77b4;
+        padding: 1rem;
+        margin: 1rem 0;
+        border-radius: 0 8px 8px 0;
+        color: #ecf0f1;
+    }
+    .formula-box {
+        background: #34495e;
+        border: 1px solid #3498db;
+        padding: 1rem;
+        border-radius: 8px;
+        font-family: 'Courier New', monospace;
+        text-align: center;
+        margin: 1rem 0;
+        color: #ecf0f1;
+    }
     .stTabs [data-baseweb="tab-list"] {
-        gap: 2rem;
+        gap: 1rem;
     }
     </style>
     """, unsafe_allow_html=True)
     
-    st.markdown('<p class="main-header">Moulinette Simulator</p>', unsafe_allow_html=True)
-    st.markdown("*Simulation et optimisation des files d'attente pour la moulinette EPITA*")
+    st.markdown('<p class="main-header">🎯 Moulinette Simulator</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Optimisation des files d\'attente pour la moulinette EPITA - Projet ERO2</p>', unsafe_allow_html=True)
     
     # Sidebar pour les paramètres globaux
     with st.sidebar:
-        st.header("Parametres globaux de la moulinette")
+        st.header("⚙️ Paramètres Globaux")
+        st.markdown("---")
         
+        st.subheader("File 1: Exécution Tests")
         mu_rate1 = st.slider(
-            "Taux de service μ1 (par serveur/min) (Queue exécution des test-suites)",
-            min_value=1.0, max_value=50.0, value=10.0, step=0.5
+            "μ₁ - Taux de service (tests/min)",
+            min_value=1.0, max_value=50.0, value=10.0, step=0.5,
+            help="Vitesse de traitement des test-suites par serveur"
         )
-
-        mu_rate2 = st.slider(
-            "Taux de service μ2 (par serveur/min) (Queue renvoie des résultats)",
-            min_value=1.0, max_value=50.0, value=10.0, step=0.5
-        )
-        
         n_servers = st.slider(
-            "Nombre de serveurs",
+            "c - Nombre de runners",
             min_value=1, max_value=20, value=4
         )
+        K1 = st.slider(
+            "K₁ - Capacité buffer File 1",
+            min_value=10, max_value=1000, value=100, step=10
+        )
         
-        buffer_size = st.slider(
-            "Taille du buffer K",
-            min_value=10, max_value=50000, value=100, step=20
+        st.markdown("---")
+        st.subheader("File 2: Renvoi Résultats")
+        mu_rate2 = st.slider(
+            "μ₂ - Taux de service (résultats/min)",
+            min_value=1.0, max_value=100.0, value=20.0, step=1.0,
+            help="Vitesse d'envoi des résultats au frontend"
+        )
+        K2 = st.slider(
+            "K₂ - Capacité buffer File 2",
+            min_value=10, max_value=500, value=50, step=10
+        )
+        
+        st.markdown("---")
+        st.subheader("Modèle File 2")
+        file2_model = st.radio(
+            "Type de service",
+            ["M/M/1 (Exponentiel)", "M/D/1 (Déterministe)"],
+            help="M/D/1 réduit le temps d'attente de 50% vs M/M/1"
         )
     
     # Onglets principaux
     tabs = st.tabs([
-        "Personas",
-        "Simulation - Moulinette",
-        "Optimisation - Moulinette",
-        "Benchmark - Modeles de files"
+        "📊 Scénario 1: Waterfall",
+        "💾 Scénario 2: Backup",
+        "👥 Channels & Dams",
+        "💰 Optimisation Coût/QoS",
+        "📈 Auto-Scaling",
+        "🔬 Benchmark Modèles"
     ])
     
-    
     with tabs[0]:
-        render_personas_tab()
+        render_waterfall_scenario(mu_rate1, mu_rate2, n_servers, K1, K2, file2_model)
     
     with tabs[1]:
-        render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size)
+        render_backup_scenario(mu_rate1, mu_rate2, n_servers, K1, K2)
     
     with tabs[2]:
-        render_optimization_tab(buffer_size)
+        render_channels_dams_tab(mu_rate1, n_servers, K1)
     
     with tabs[3]:
-        render_queue_models_tab(mu_rate1, n_servers, buffer_size)
+        render_optimization_tab(mu_rate1, n_servers, K1)
+    
+    with tabs[4]:
+        render_autoscaling_tab(mu_rate1, mu_rate2, n_servers, K1, K2)
+    
+    with tabs[5]:
+        render_benchmark_tab(mu_rate1, n_servers, K1)
 
-def render_queue_models_tab(mu_rate, n_servers, buffer_size):
-    """Onglet de comparaison des modèles de files d'attente."""
-    st.header("Comparaison des modeles de files d'attente")
 
-    # Ensure proper type conversion for user inputs
-    try:
-        mu_rate = float(mu_rate)
-        n_servers = int(n_servers)
-        buffer_size = int(buffer_size)
-    except ValueError:
-        st.error("Veuillez entrer des valeurs numériques valides pour les paramètres.")
-        return
+# ==============================================================================
+# SCÉNARIO 1: MODÈLE WATERFALL
+# ==============================================================================
 
-    col1, col2 = st.columns([2, 1])
-
-    with col2:
-        st.subheader("Selection des modeles")
-        st.markdown("**Modeles mono-serveur:**")
-        show_mm1 = st.checkbox("M/M/1", value=True, key="th_mm1")
-        show_md1 = st.checkbox("M/D/1", value=True, key="th_md1")
-        show_mg1 = st.checkbox("M/G/1", value=True, key="th_mg1")
-
-        st.markdown("**Modeles multi-serveurs:**")
-        show_mmc = st.checkbox("M/M/c", value=True, key="th_mmc")
-        show_mdc = st.checkbox("M/D/c", value=True, key="th_mdc")
-        show_mgc = st.checkbox("M/G/c", value=True, key="th_mgc")
-
-        cv_squared = st.slider(
-            "CV2 service (pour M/G/1 et M/G/c)",
-            min_value=0.0, max_value=2.0, value=1.0, step=0.1,
-            key="th_cv2"
-        )
-
-    with col1:
-        # Calculer les métriques théoriques pour chaque modèle
-        models_data = []
-        service_mean = 1.0 / mu_rate
-
+def render_waterfall_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1: int, K2: int, file2_model: str):
+    """Scénario 1: Modèle Waterfall avec files infinies puis finies."""
+    st.header("📊 Scénario 1: Modèle Waterfall")
+    
+    st.markdown("""
+    <div class="scenario-box">
+    <strong>Architecture en cascade de la moulinette:</strong><br>
+    <code>Étudiants → Buffer₁ (K₁) → Runners (c) → Buffer₂ (K₂) → Frontend (1 serveur)</code>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Schéma du système
+    col_diagram, col_params = st.columns([2, 1])
+    
+    with col_params:
+        st.subheader("Paramètres d'entrée")
         lambda_rate = st.slider(
-            "Taux d'arrivée λ (soumissions/min)",
-            min_value=1.0, max_value=100.0, value=30.0, step=1.0
+            "λ - Taux d'arrivée (tags/min)",
+            min_value=1.0, max_value=100.0, value=30.0, step=1.0,
+            key="waterfall_lambda"
         )
-
-        mu_rate_model = st.slider("Taux de service μ (par serveur/min)",
-            min_value=1.0, max_value=50.0, value=10.0, step=0.5
+        
+        capacity_mode = st.radio(
+            "Mode de capacité",
+            ["Files infinies (K=∞)", "Files finies (K limité)"],
+            key="waterfall_capacity"
         )
-
-        # Modèles mono-serveur (condition: lambda < mu)
-        if show_mm1 and lambda_rate < mu_rate_model:
-            queue = GenericQueue(lambda_rate, mu_rate_model, "M/M/1")
-            metrics = queue.compute_theoretical_metrics()
-            models_data.append({
-                'Modele': 'M/M/1',
-                'L (clients)': metrics.L,
-                'Lq (en attente)': metrics.Lq,
-                'W (min)': metrics.W,
-                'Wq (min)': metrics.Wq,
-                'rho': metrics.rho,
-                'P_blocage': 0.0
-            })
-
-        if show_md1 and lambda_rate < mu_rate_model:
-            queue = GenericQueue(lambda_rate, mu_rate_model, "M/D/1")
-            metrics = queue.compute_theoretical_metrics()
-            models_data.append({
-                'Modele': 'M/D/1',
-                'L (clients)': metrics.L,
-                'Lq (en attente)': metrics.Lq,
-                'W (min)': metrics.W,
-                'Wq (min)': metrics.Wq,
-                'rho': metrics.rho,
-                'P_blocage': 0.0
-            })
-
-        if show_mg1 and lambda_rate < mu_rate_model:
-            queue = GenericQueue(lambda_rate, mu_rate_model, "M/G/1")
-            metrics = queue.compute_theoretical_metrics()
-            models_data.append({
-                'Modele': f'M/G/1 (CV2={cv_squared})',
-                'L (clients)': metrics.L,
-                'Lq (en attente)': metrics.Lq,
-                'W (min)': metrics.W,
-                'Wq (min)': metrics.Wq,
-                'rho': metrics.rho,
-                'P_blocage': 0.0
-            })
-
-        # Modèles multi-serveurs (condition: lambda < c*mu)
-        if show_mmc and lambda_rate < n_servers * mu_rate_model:
-            queue = GenericQueue(lambda_rate, mu_rate_model, "M/M/c", n_servers)
-            metrics = queue.compute_theoretical_metrics()
-            models_data.append({
-                'Modele': f'M/M/{n_servers}',
-                'L (clients)': metrics.L,
-                'Lq (en attente)': metrics.Lq,
-                'W (min)': metrics.W,
-                'Wq (min)': metrics.Wq,
-                'rho': metrics.rho,
-                'P_blocage': 0.0
-            })
-
-        if show_mdc and lambda_rate < n_servers * mu_rate_model:
-            queue = GenericQueue(lambda_rate, mu_rate_model, "M/D/c", n_servers)
-            metrics = queue.compute_theoretical_metrics()
-            models_data.append({
-                'Modele': f'M/D/{n_servers}',
-                'L (clients)': metrics.L,
-                'Lq (en attente)': metrics.Lq,
-                'W (min)': metrics.W,
-                'Wq (min)': metrics.Wq,
-                'rho': metrics.rho,
-                'P_blocage': 0.0
-            })
-
-        if show_mgc and lambda_rate < n_servers * mu_rate_model:
-            queue = GenericQueue(lambda_rate, mu_rate_model, "M/G/c", n_servers)
-            metrics = queue.compute_theoretical_metrics()
-            models_data.append({
-                'Modele': f'M/G/{n_servers} (CV2={cv_squared})',
-                'L (clients)': metrics.L,
-                'Lq (en attente)': metrics.Lq,
-                'W (min)': metrics.W,
-                'Wq (min)': metrics.Wq,
-                'rho': metrics.rho,
-                'P_blocage': 0.0
-            })
-
-        if models_data:
-            df = pd.DataFrame(models_data)
-            st.subheader("Metriques theoriques")
-            st.dataframe(df.style.format({
-                'L (clients)': '{:.2f}',
-                'Lq (en attente)': '{:.2f}',
-                'W (min)': '{:.3f}',
-                'Wq (min)': '{:.3f}',
-                'rho': '{:.2%}',
-                'P_blocage': '{:.4%}'
-            }), use_container_width=True)
-            
-            # Graphique de comparaison
-            fig = make_subplots(rows=1, cols=2, subplot_titles=['Temps d\'attente (Wq)', 'Longueur de queue (Lq)'])
-            
-            fig.add_trace(
-                go.Bar(x=df['Modele'], y=df['Wq (min)'], name='Wq'),
-                row=1, col=1
-            )
-            fig.add_trace(
-                go.Bar(x=df['Modele'], y=df['Lq (en attente)'], name='Lq'),
-                row=1, col=2
-            )
-            
-            fig.update_layout(height=400, showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("Aucun modele selectionne ou parametres invalides (systeme instable)")
+        
+        use_md1 = "M/D/1" in file2_model
     
-    # ==========================================
-    # SECTION SIMULATION MONTE CARLO COMPARATIVE
-    # ==========================================
+    with col_diagram:
+        # Créer un schéma visuel du système
+        fig_diagram = create_waterfall_diagram(lambda_rate, mu_rate1, mu_rate2, n_servers, K1, K2, capacity_mode)
+        st.plotly_chart(apply_dark_theme(fig_diagram), use_container_width=True)
+    
     st.divider()
-    st.subheader("Simulation Monte Carlo - Comparaison de tous les modeles")
     
-    col1, col2, col3 = st.columns([1, 1, 2])
+    # Section analyse théorique
+    col1, col2 = st.columns(2)
     
     with col1:
-        sim_n_customers = st.number_input("Nombre de clients", 100, 50000, 2000, step=100, key="sim_n_customers")
-        n_runs = st.number_input("Nombre de runs", 1, 50, 3, key="sim_n_runs")
-        save_simulation = st.checkbox("Sauvegarder les resultats", value=True, key="sim_save")
+        st.subheader("📐 File 1: Exécution des tests (M/M/c)")
+        
+        # Condition de stabilité
+        rho1 = lambda_rate / (n_servers * mu_rate1)
+        stable1 = rho1 < 1 or capacity_mode == "Files finies (K limité)"
+        
+        st.markdown(f"""
+        **Condition de stabilité:** ρ₁ = λ/(c×μ₁) = {lambda_rate:.1f}/({n_servers}×{mu_rate1:.1f}) = **{rho1:.3f}**
+        """)
+        
+        if rho1 < 1:
+            st.success(f"✅ Système stable (ρ₁ = {rho1:.2%} < 100%)")
+        else:
+            if capacity_mode == "Files finies (K limité)":
+                st.warning(f"⚠️ ρ₁ = {rho1:.2%} ≥ 100% mais stable grâce au buffer fini K₁={K1}")
+            else:
+                st.error(f"❌ Système instable (ρ₁ = {rho1:.2%} ≥ 100%)")
+        
+        if stable1 or capacity_mode == "Files finies (K limité)":
+            try:
+                if capacity_mode == "Files infinies (K=∞)":
+                    queue1 = GenericQueue(lambda_rate, mu_rate1, f"M/M/{n_servers}", c=n_servers)
+                    metrics1 = queue1.compute_theoretical_metrics()
+                    P_K1 = 0.0
+                    lambda_eff = lambda_rate
+                else:
+                    # M/M/c/K - calcul avec file finie
+                    metrics1, P_K1 = compute_mmck_metrics(lambda_rate, mu_rate1, n_servers, K1)
+                    lambda_eff = lambda_rate * (1 - P_K1)
+                
+                # Afficher les métriques
+                display_queue_metrics(metrics1, "File 1", P_K1)
+                
+            except Exception as e:
+                st.error(f"Erreur de calcul: {e}")
+                metrics1 = None
+                lambda_eff = 0
+        else:
+            metrics1 = None
+            lambda_eff = 0
     
     with col2:
-        st.markdown("**Modeles a simuler:**")
-        sim_mm1 = st.checkbox("M/M/1", value=True, key="sim_mm1")
-        sim_md1 = st.checkbox("M/D/1", value=True, key="sim_md1")
-        sim_mg1 = st.checkbox("M/G/1", value=True, key="sim_mg1")
-        sim_mmc = st.checkbox("M/M/c", value=True, key="sim_mmc")
-        sim_mdc = st.checkbox("M/D/c", value=True, key="sim_mdc")
-        sim_mgc = st.checkbox("M/G/c", value=True, key="sim_mgc")
-    
-    with col3:
-        run_sim = st.button("Lancer simulation comparative", key="run_sim_compare", type="primary")
-        st.markdown("""
-        **Note:** Les systemes instables (queue croissante) 
-        seront simules normalement sur un nombre fini de clients.
-        """)
-    
-    # Résultats en pleine largeur (en dehors des colonnes)
-    if run_sim:
-        with st.spinner("Simulation de tous les modeles en cours..."):
-            simulation_results = []
-            temporal_data = {}  # Pour les graphiques temporels
-            service_mean = 1.0 / mu_rate
-            service_variance = cv_squared * (service_mean ** 2)
+        st.subheader(f"📐 File 2: Renvoi des résultats ({'M/D/1' if use_md1 else 'M/M/1'})")
+        
+        if lambda_eff > 0:
+            # Le taux d'entrée en file 2 = taux de sortie de file 1
+            lambda2 = lambda_eff
+            rho2 = lambda2 / mu_rate2
             
-            # Configuration des modèles à simuler (tous les modèles cochés, sans restriction)
-            models_config = []
+            st.markdown(f"""
+            **Taux d'arrivée effectif:** λ₂ = λ_eff = {lambda2:.2f} tags/min
             
-            # Modèles mono-serveur (lancés sans condition)
-            if sim_mm1:
-                models_config.append(('M/M/1', GenericQueue(lambda_rate, mu_rate, "M/M/1"), lambda_rate < mu_rate))
+            **Condition de stabilité:** ρ₂ = λ₂/μ₂ = {lambda2:.2f}/{mu_rate2:.1f} = **{rho2:.3f}**
+            """)
             
-            if sim_md1:
-                models_config.append(('M/D/1', GenericQueue(lambda_rate, mu_rate, "M/D/1"), lambda_rate < mu_rate))
-            
-            if sim_mg1:
-                models_config.append(('M/G/1', GenericQueue(lambda_rate, mu_rate, "M/G/1"), lambda_rate < mu_rate))
-            
-            # Modèles multi-serveurs (lancés sans condition)
-            if sim_mmc:
-                models_config.append((f'M/M/{n_servers}', GenericQueue(lambda_rate, mu_rate, "M/M/c", n_servers), lambda_rate < n_servers * mu_rate))
-            
-            if sim_mdc:
-                models_config.append((f'M/D/{n_servers}', GenericQueue(lambda_rate, mu_rate, "M/D/c", n_servers), lambda_rate < n_servers * mu_rate))
-            
-            if sim_mgc:
-                models_config.append((f'M/G/{n_servers}', GenericQueue(lambda_rate, mu_rate, "M/G/c", n_servers), lambda_rate < n_servers * mu_rate))
-            
-            # Afficher les avertissements pour les systèmes instables
-            unstable_models = [name for name, _, is_stable in models_config if not is_stable]
-            if unstable_models:
-                st.info(f"Systemes instables (rho >= 1): {', '.join(unstable_models)} - La queue va croitre")
-            
-            if not models_config:
-                st.error("Aucun modele selectionne.")
+            if rho2 < 1:
+                st.success(f"✅ Système stable (ρ₂ = {rho2:.2%} < 100%)")
             else:
-                progress_bar = st.progress(0)
-                total_sims = len(models_config) * n_runs
-                current_sim = 0
-                
-                for model_name, queue, is_stable in models_config:
-                    temporal_data[model_name] = {'times': [], 'queue_lengths': [], 'waiting_times': [], 'arrival_times': []}
-                    
-                    for run in range(n_runs):
-                        try:
-                            result = queue.simulate(n_customers=sim_n_customers)
-                            
-                            if len(result.system_times) > 0:
-                                simulation_results.append({
-                                    'Modele': model_name,
-                                    'Run': run + 1,
-                                    'Clients servis': result.n_served,
-                                    'Temps systeme (min)': float(np.mean(result.system_times)),
-                                    'Temps attente (min)': float(np.mean(result.waiting_times)),
-                                    'Longueur max queue': int(np.max(result.queue_length_trace)) if len(result.queue_length_trace) > 0 else 0,
-                                    'Longueur moy queue': float(np.mean(result.queue_length_trace)) if len(result.queue_length_trace) > 0 else 0,
-                                    'Taux rejet (%)': 100 * result.n_rejected / result.n_arrivals if result.n_arrivals > 0 else 0,
-                                    'Stable': 'Oui' if is_stable else 'Non'
-                                })
-                                
-                                # Stocker les données temporelles (dernier run uniquement)
-                                if run == n_runs - 1:
-                                    # Sous-échantillonner pour éviter trop de points, mais garder le dernier point
-                                    step = max(1, len(result.time_trace) // 500)
-                                    
-                                    # Queue lengths avec dernier point
-                                    ql = result.queue_length_trace[::step].tolist()
-                                    if len(result.queue_length_trace) > 0 and result.queue_length_trace[-1] not in ql[-1:]:
-                                        ql.append(float(result.queue_length_trace[-1]))
-                                    temporal_data[model_name]['queue_lengths'] = ql
-                                    
-                                    # Times avec dernier point
-                                    times = result.time_trace[::step].tolist() if len(result.time_trace) > 0 else []
-                                    if len(result.time_trace) > 0 and result.time_trace[-1] not in times[-1:]:
-                                        times.append(float(result.time_trace[-1]))
-                                    temporal_data[model_name]['times'] = times
-                                    
-                                    # Waiting times et arrival times
-                                    temporal_data[model_name]['waiting_times'] = result.waiting_times[::step].tolist() if len(result.waiting_times) > step else result.waiting_times.tolist()
-                                    temporal_data[model_name]['arrival_times'] = result.arrival_times[::step].tolist() if len(result.arrival_times) > step else result.arrival_times.tolist()
-                        except Exception as e:
-                            st.warning(f"{model_name} Run {run+1}: {str(e)}")
-                        
-                        current_sim += 1
-                        progress_bar.progress(current_sim / total_sims)
-                
-                progress_bar.empty()
-                
-                # Affichage des résultats
-                if simulation_results:
-                    df_sim = pd.DataFrame(simulation_results)
-                    
-                    # Résumé statistique
-                    st.markdown("### Resume statistique (moyenne +/- ecart-type)")
-                    summary = df_sim.groupby('Modele').agg({
-                        'Clients servis': ['mean', 'std'],
-                        'Temps systeme (min)': ['mean', 'std'],
-                        'Temps attente (min)': ['mean', 'std'],
-                        'Longueur moy queue': ['mean', 'std'],
-                        'Taux rejet (%)': ['mean', 'std']
-                    }).round(3)
-                    
-                    summary_display = pd.DataFrame()
-                    for col in ['Clients servis', 'Temps systeme (min)', 'Temps attente (min)', 'Longueur moy queue', 'Taux rejet (%)']:
-                        mean_vals = summary[col]['mean'].fillna(0)
-                        std_vals = summary[col]['std'].fillna(0)
-                        summary_display[col] = mean_vals.astype(str) + ' +/- ' + std_vals.astype(str)
-                    
-                    st.dataframe(summary_display, use_container_width=True)
-                    
-                    # Espacement vertical
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    
-                    # ==========================================
-                    # GRAPHIQUES TEMPORELS COMPARATIFS
-                    # ==========================================
-                    st.markdown("### Evolution temporelle comparee")
-                    
-                    # Couleurs distinctes pour chaque modèle
-                    colors = px.colors.qualitative.Set1
-                    color_map = {name: colors[i % len(colors)] for i, name in enumerate(temporal_data.keys())}
-                    
-                    # Graphique longueur de queue dans le temps
-                    fig_temporal = make_subplots(
-                        rows=2, cols=1,
-                        subplot_titles=['Longueur de queue au cours du temps', 'Temps d\'attente au cours du temps'],
-                        vertical_spacing=0.18
-                    )
-                    
-                    for model_name, data in temporal_data.items():
-                        if data['queue_lengths'] and data['times']:
-                            fig_temporal.add_trace(
-                                go.Scatter(
-                                    x=data['times'],
-                                    y=data['queue_lengths'],
-                                    mode='lines',
-                                    name=model_name,
-                                    line=dict(color=color_map[model_name]),
-                                    legendgroup=model_name
-                                ),
-                                row=1, col=1
-                            )
-                        
-                        if data['waiting_times'] and data.get('arrival_times'):
-                            fig_temporal.add_trace(
-                                go.Scatter(
-                                    x=data['arrival_times'],
-                                    y=data['waiting_times'],
-                                    mode='lines',
-                                    name=model_name,
-                                    line=dict(color=color_map[model_name]),
-                                    legendgroup=model_name,
-                                    showlegend=False
-                                ),
-                                row=2, col=1
-                            )
-                    
-                    fig_temporal.update_xaxes(title_text="Temps de simulation (min)", row=1, col=1)
-                    fig_temporal.update_xaxes(title_text="Temps de simulation (min)", row=2, col=1)
-                    fig_temporal.update_yaxes(title_text="Clients en queue", row=1, col=1)
-                    fig_temporal.update_yaxes(title_text="Temps attente (min)", row=2, col=1)
-                    fig_temporal.update_layout(
-                        height=800, 
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                        margin=dict(t=80, b=40)
-                    )
-                    
-                    st.plotly_chart(fig_temporal, use_container_width=True)
-                    
-                    # Espacement vertical
-                    st.markdown("<br><br>", unsafe_allow_html=True)
-                    
-                    # Box plots de comparaison
-                    st.markdown("### Distribution des metriques")
-                    
-                    fig_box = make_subplots(
-                        rows=1, cols=3,
-                        subplot_titles=['Temps attente (min)', 'Temps systeme (min)', 'Longueur moy queue']
-                    )
-                    
-                    for model in df_sim['Modele'].unique():
-                        model_data = df_sim[df_sim['Modele'] == model]
-                        color = color_map.get(model, '#1f77b4')
-                        
-                        fig_box.add_trace(
-                            go.Box(y=model_data['Temps attente (min)'], name=model, marker_color=color, showlegend=True),
-                            row=1, col=1
-                        )
-                        fig_box.add_trace(
-                            go.Box(y=model_data['Temps systeme (min)'], name=model, marker_color=color, showlegend=False),
-                            row=1, col=2
-                        )
-                        fig_box.add_trace(
-                            go.Box(y=model_data['Longueur moy queue'], name=model, marker_color=color, showlegend=False),
-                            row=1, col=3
-                        )
-                    
-                    fig_box.update_layout(height=450, margin=dict(t=40, b=40))
-                    st.plotly_chart(fig_box, use_container_width=True)
-                    
-                    # Espacement vertical
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    
-                    # Sauvegarde des résultats
-                    if save_simulation:
-                        sim_dir = Path(__file__).parent.parent.parent / 'simulations' / 'modele_comparative'
-                        sim_dir.mkdir(parents=True, exist_ok=True)
-                        
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"simulation_{timestamp}.json"
-                        filepath = sim_dir / filename
-                        
-                        save_data = {
-                            'timestamp': timestamp,
-                            'parameters': {
-                                'lambda_rate': lambda_rate,
-                                'mu_rate': mu_rate,
-                                'n_servers': n_servers,
-                                'cv_squared': cv_squared,
-                                'n_customers': sim_n_customers,
-                                'n_runs': n_runs
-                            },
-                            'results': simulation_results,
-                            'summary': {
-                                model: {
-                                    'mean_wait': float(df_sim[df_sim['Modele'] == model]['Temps attente (min)'].mean()),
-                                    'std_wait': float(df_sim[df_sim['Modele'] == model]['Temps attente (min)'].std()),
-                                    'mean_system': float(df_sim[df_sim['Modele'] == model]['Temps systeme (min)'].mean()),
-                                    'mean_queue_length': float(df_sim[df_sim['Modele'] == model]['Longueur moy queue'].mean())
-                                }
-                                for model in df_sim['Modele'].unique()
-                            }
-                        }
-                        
-                        with open(filepath, 'w', encoding='utf-8') as f:
-                            json.dump(save_data, f, indent=2, ensure_ascii=False)
-                        
-                        st.success(f"Simulation sauvegardee: {filepath}")
-                    
-                    # Tableau détaillé
-                    with st.expander("Voir les resultats detailles de tous les runs"):
-                        st.dataframe(df_sim, use_container_width=True)
+                if capacity_mode == "Files finies (K limité)":
+                    st.warning(f"⚠️ ρ₂ = {rho2:.2%} ≥ 100% mais stable grâce au buffer fini K₂={K2}")
                 else:
-                    st.error("Aucune simulation valide. Verifiez les parametres et conditions de stabilite.")
-
-
-def render_personas_tab():
-    """Onglet des personas étudiants."""
-    st.header("Personas Etudiants")
+                    st.error(f"❌ Système instable (ρ₂ = {rho2:.2%} ≥ 100%)")
+            
+            try:
+                if capacity_mode == "Files infinies (K=∞)" and rho2 < 1:
+                    notation = "M/D/1" if use_md1 else "M/M/1"
+                    queue2 = GenericQueue(lambda2, mu_rate2, notation)
+                    metrics2 = queue2.compute_theoretical_metrics()
+                    P_K2 = 0.0
+                else:
+                    # M/M/1/K ou M/D/1/K
+                    metrics2, P_K2 = compute_mm1k_metrics(lambda2, mu_rate2, K2, use_md1)
+                
+                display_queue_metrics(metrics2, "File 2", P_K2)
+                
+                # Avantage M/D/1 vs M/M/1
+                if use_md1:
+                    st.info("💡 **M/D/1:** Temps d'attente réduit de ~50% grâce au service déterministe")
+                
+            except Exception as e:
+                st.error(f"Erreur de calcul: {e}")
+                metrics2 = None
+                P_K2 = 0
+        else:
+            st.warning("Calculez d'abord la File 1")
+            metrics2 = None
+            P_K2 = 0
     
-    # Créer les personas
-    personas = PersonaFactory.create_all_personas()
+    st.divider()
+    
+    # Métriques globales du système
+    st.subheader("🎯 Performance Globale du Système Waterfall")
+    
+    if metrics1 is not None and 'metrics2' in dir() and metrics2 is not None:
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        
+        W_total = metrics1.W + metrics2.W
+        P_rejet = P_K1 if 'P_K1' in dir() else 0.0
+        P_blank = (1 - P_rejet) * P_K2 if 'P_K2' in dir() else 0.0
+        
+        with col_m1:
+            st.metric("Temps de séjour total (W)", f"{W_total:.3f} min")
+        with col_m2:
+            st.metric("Taux de rejet (P_K₁)", f"{P_rejet:.2%}")
+        with col_m3:
+            st.metric("Pages blanches (P_blank)", f"{P_blank:.4%}")
+        with col_m4:
+            throughput = lambda_rate * (1 - P_rejet) * (1 - P_K2)
+            st.metric("Débit effectif", f"{throughput:.2f} tags/min")
+        
+        # Formules
+        st.markdown("""
+        <div class="formula-box">
+        <strong>Formules clés:</strong><br>
+        W_total = W₁ + W₂<br>
+        P_rejet = P(file 1 pleine) = π_K₁<br>
+        P_blank = (1 - P_rejet) × P_K₂
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Simulation Monte Carlo
+    st.divider()
+    st.subheader("🎲 Simulation Monte Carlo")
+    
+    col_sim1, col_sim2 = st.columns([1, 2])
+    
+    with col_sim1:
+        n_customers = st.number_input("Nombre de clients", 100, 10000, 2000, step=100, key="waterfall_n")
+        n_runs = st.number_input("Nombre de répétitions", 1, 20, 5, key="waterfall_runs")
+        run_sim = st.button("▶️ Lancer simulation Waterfall", type="primary", key="waterfall_run")
+    
+    with col_sim2:
+        if run_sim:
+            run_waterfall_simulation(lambda_rate, mu_rate1, mu_rate2, n_servers, K1, K2, 
+                                    n_customers, n_runs, capacity_mode, use_md1)
+
+
+def create_waterfall_diagram(lambda_rate, mu_rate1, mu_rate2, n_servers, K1, K2, capacity_mode):
+    """Crée un schéma visuel du système Waterfall."""
+    fig = go.Figure()
+    
+    # Paramètres de positionnement
+    y_base = 0.5
+    
+    # Source (étudiants)
+    fig.add_trace(go.Scatter(
+        x=[0], y=[y_base],
+        mode='markers+text',
+        marker=dict(size=40, color='#2ecc71', symbol='circle'),
+        text=['👨‍🎓'], textposition='middle center',
+        name='Étudiants', showlegend=False
+    ))
+    fig.add_annotation(x=0, y=y_base-0.15, text=f"λ={lambda_rate}", showarrow=False)
+    
+    # Flèche vers Buffer 1
+    fig.add_annotation(x=0.5, y=y_base, ax=0.15, ay=y_base,
+                      xref="x", yref="y", axref="x", ayref="y",
+                      showarrow=True, arrowhead=2, arrowsize=1.5)
+    
+    # Buffer 1
+    k1_text = "∞" if "infinies" in capacity_mode else str(K1)
+    fig.add_trace(go.Scatter(
+        x=[1], y=[y_base],
+        mode='markers+text',
+        marker=dict(size=50, color='#3498db', symbol='square'),
+        text=[f'📦'], textposition='middle center',
+        name='Buffer 1', showlegend=False
+    ))
+    fig.add_annotation(x=1, y=y_base-0.15, text=f"K₁={k1_text}", showarrow=False)
+    
+    # Flèche vers Runners
+    fig.add_annotation(x=1.5, y=y_base, ax=1.15, ay=y_base,
+                      xref="x", yref="y", axref="x", ayref="y",
+                      showarrow=True, arrowhead=2, arrowsize=1.5)
+    
+    # Runners (multi-serveurs)
+    fig.add_trace(go.Scatter(
+        x=[2], y=[y_base],
+        mode='markers+text',
+        marker=dict(size=60, color='#e74c3c', symbol='square'),
+        text=['🖥️'], textposition='middle center',
+        name='Runners', showlegend=False
+    ))
+    fig.add_annotation(x=2, y=y_base-0.15, text=f"c={n_servers}, μ₁={mu_rate1}", showarrow=False)
+    
+    # Flèche vers Buffer 2
+    fig.add_annotation(x=2.5, y=y_base, ax=2.15, ay=y_base,
+                      xref="x", yref="y", axref="x", ayref="y",
+                      showarrow=True, arrowhead=2, arrowsize=1.5)
+    
+    # Buffer 2
+    k2_text = "∞" if "infinies" in capacity_mode else str(K2)
+    fig.add_trace(go.Scatter(
+        x=[3], y=[y_base],
+        mode='markers+text',
+        marker=dict(size=50, color='#9b59b6', symbol='square'),
+        text=['📦'], textposition='middle center',
+        name='Buffer 2', showlegend=False
+    ))
+    fig.add_annotation(x=3, y=y_base-0.15, text=f"K₂={k2_text}", showarrow=False)
+    
+    # Flèche vers Frontend
+    fig.add_annotation(x=3.5, y=y_base, ax=3.15, ay=y_base,
+                      xref="x", yref="y", axref="x", ayref="y",
+                      showarrow=True, arrowhead=2, arrowsize=1.5)
+    
+    # Frontend
+    fig.add_trace(go.Scatter(
+        x=[4], y=[y_base],
+        mode='markers+text',
+        marker=dict(size=50, color='#f39c12', symbol='circle'),
+        text=['🖥️'], textposition='middle center',
+        name='Frontend', showlegend=False
+    ))
+    fig.add_annotation(x=4, y=y_base-0.15, text=f"μ₂={mu_rate2}", showarrow=False)
+    
+    fig.update_layout(
+        height=200,
+        xaxis=dict(showgrid=False, showticklabels=False, range=[-0.5, 4.5]),
+        yaxis=dict(showgrid=False, showticklabels=False, range=[0, 1]),
+        margin=dict(l=20, r=20, t=30, b=20),
+        title="Architecture du système Waterfall"
+    )
+    
+    return apply_dark_theme(fig)
+
+
+def display_queue_metrics(metrics: QueueMetrics, name: str, P_K: float = 0.0):
+    """Affiche les métriques d'une file."""
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(f"L (clients dans système)", f"{metrics.L:.2f}")
+        st.metric(f"W (temps de séjour)", f"{metrics.W:.3f} min")
+    with col2:
+        st.metric(f"Lq (en attente)", f"{metrics.Lq:.2f}")
+        st.metric(f"Wq (temps d'attente)", f"{metrics.Wq:.3f} min")
+    
+    if P_K > 0:
+        st.metric(f"P(blocage)", f"{P_K:.4%}")
+
+
+def compute_mmck_metrics(lambda_rate: float, mu_rate: float, c: int, K: int) -> Tuple[QueueMetrics, float]:
+    """Calcule les métriques pour M/M/c/K."""
+    rho = lambda_rate / (c * mu_rate)
+    a = lambda_rate / mu_rate
+    
+    # Calcul de π₀
+    sum1 = sum((a ** n) / math.factorial(n) for n in range(c))
+    if rho != 1:
+        sum2 = ((a ** c) / math.factorial(c)) * (1 - rho ** (K - c + 1)) / (1 - rho)
+    else:
+        sum2 = ((a ** c) / math.factorial(c)) * (K - c + 1)
+    
+    P0 = 1 / (sum1 + sum2)
+    
+    # Calcul de π_K (probabilité de blocage)
+    if rho != 1:
+        P_K = ((a ** K) / (math.factorial(c) * (c ** (K - c)))) * P0
+    else:
+        P_K = ((a ** K) / math.factorial(K)) * P0
+    
+    # Lambda effectif
+    lambda_eff = lambda_rate * (1 - P_K)
+    
+    # Calcul de L
+    L = 0
+    for n in range(1, c + 1):
+        L += n * ((a ** n) / math.factorial(n)) * P0
+    
+    if rho != 1:
+        numerator = (a ** c * rho * P0) / math.factorial(c)
+        L += numerator * (1 - rho ** (K - c + 1) - (1 - rho) * (K - c + 1) * rho ** (K - c)) / ((1 - rho) ** 2)
+    
+    # Métriques via Little
+    Lq = max(0, L - (1 - P0) * c / c)  # Approximation
+    W = L / lambda_eff if lambda_eff > 0 else 0
+    Wq = Lq / lambda_eff if lambda_eff > 0 else 0
+    
+    metrics = QueueMetrics(
+        rho=rho if rho < 1 else 1.0,
+        L=L,
+        Lq=Lq,
+        W=W,
+        Wq=Wq,
+        Ws=1/mu_rate,
+        P0=P0,
+        Pk=P_K,
+        lambda_eff=lambda_eff,
+        throughput=lambda_eff
+    )
+    
+    return metrics, P_K
+
+
+def compute_mm1k_metrics(lambda_rate: float, mu_rate: float, K: int, deterministic: bool = False) -> Tuple[QueueMetrics, float]:
+    """Calcule les métriques pour M/M/1/K ou M/D/1/K."""
+    rho = lambda_rate / mu_rate
+    
+    if rho == 1:
+        P0 = 1 / (K + 1)
+        P_K = 1 / (K + 1)
+        L = K / 2
+    else:
+        P0 = (1 - rho) / (1 - rho ** (K + 1))
+        P_K = P0 * (rho ** K)
+        L = rho * (1 - (K + 1) * rho ** K + K * rho ** (K + 1)) / ((1 - rho) * (1 - rho ** (K + 1)))
+    
+    lambda_eff = lambda_rate * (1 - P_K)
+    
+    W = L / lambda_eff if lambda_eff > 0 else 0
+    Wq = W - 1/mu_rate
+    Lq = lambda_eff * Wq if Wq > 0 else 0
+    
+    # Pour M/D/1: réduction de 50% du temps d'attente
+    if deterministic:
+        Wq = Wq / 2
+        Lq = Lq / 2
+        W = Wq + 1/mu_rate
+    
+    metrics = QueueMetrics(
+        rho=min(rho, 1.0),
+        L=L,
+        Lq=Lq,
+        W=W,
+        Wq=Wq,
+        Ws=1/mu_rate,
+        P0=P0,
+        Pk=P_K,
+        lambda_eff=lambda_eff,
+        throughput=lambda_eff
+    )
+    
+    return metrics, P_K
+
+
+def run_waterfall_simulation(lambda_rate, mu_rate1, mu_rate2, n_servers, K1, K2, 
+                             n_customers, n_runs, capacity_mode, use_md1):
+    """Exécute une simulation Monte Carlo du système Waterfall."""
+    with st.spinner("Simulation en cours..."):
+        results_all = []
+        
+        for run in range(n_runs):
+            # File 1: M/M/c ou M/M/c/K
+            if "infinies" in capacity_mode:
+                queue1 = GenericQueue(lambda_rate, mu_rate1, f"M/M/{n_servers}", c=n_servers)
+            else:
+                queue1 = GenericQueue(lambda_rate, mu_rate1, f"M/M/{n_servers}", c=n_servers, K=K1)
+            
+            res1 = queue1.simulate(n_customers=n_customers)
+            
+            # File 2: utilise les temps de départ de File 1 comme arrivées
+            if len(res1.departure_times) > 0:
+                notation2 = "M/D/1" if use_md1 else "M/M/1"
+                if "infinies" in capacity_mode:
+                    queue2 = GenericQueue(lambda_rate, mu_rate2, notation2)
+                else:
+                    queue2 = GenericQueue(lambda_rate, mu_rate2, notation2, K=K2)
+                
+                res2 = queue2.simulate(external_arrival_times=res1.departure_times)
+                
+                results_all.append({
+                    'run': run + 1,
+                    'file1_served': res1.n_served,
+                    'file1_rejected': res1.n_rejected,
+                    'file1_wait': np.mean(res1.waiting_times) if len(res1.waiting_times) > 0 else 0,
+                    'file1_system': np.mean(res1.system_times) if len(res1.system_times) > 0 else 0,
+                    'file2_served': res2.n_served,
+                    'file2_rejected': res2.n_rejected,
+                    'file2_wait': np.mean(res2.waiting_times) if len(res2.waiting_times) > 0 else 0,
+                    'file2_system': np.mean(res2.system_times) if len(res2.system_times) > 0 else 0,
+                    'total_wait': (np.mean(res1.waiting_times) if len(res1.waiting_times) > 0 else 0) + 
+                                  (np.mean(res2.waiting_times) if len(res2.waiting_times) > 0 else 0),
+                    'total_system': (np.mean(res1.system_times) if len(res1.system_times) > 0 else 0) + 
+                                    (np.mean(res2.system_times) if len(res2.system_times) > 0 else 0),
+                })
+        
+        if results_all:
+            df = pd.DataFrame(results_all)
+            
+            # Statistiques
+            st.markdown("### Résultats de simulation")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Temps d'attente moyen total", 
+                         f"{df['total_wait'].mean():.3f} ± {df['total_wait'].std():.3f} min")
+            with col2:
+                st.metric("Temps de séjour moyen total",
+                         f"{df['total_system'].mean():.3f} ± {df['total_system'].std():.3f} min")
+            with col3:
+                reject_rate = df['file1_rejected'].sum() / (df['file1_served'].sum() + df['file1_rejected'].sum())
+                st.metric("Taux de rejet File 1", f"{reject_rate:.2%}")
+            
+            # Graphique
+            fig = make_subplots(rows=1, cols=2, subplot_titles=['Temps par file', 'Distribution des temps totaux'])
+            
+            fig.add_trace(go.Box(y=df['file1_wait'], name='Attente F1'), row=1, col=1)
+            fig.add_trace(go.Box(y=df['file2_wait'], name='Attente F2'), row=1, col=1)
+            fig.add_trace(go.Box(y=df['file1_system'], name='Séjour F1'), row=1, col=1)
+            fig.add_trace(go.Box(y=df['file2_system'], name='Séjour F2'), row=1, col=1)
+            
+            fig.add_trace(go.Histogram(x=df['total_system'], name='Temps total', nbinsx=20), row=1, col=2)
+            
+            fig.update_layout(height=400, showlegend=True)
+            st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
+
+
+# ==============================================================================
+# SCÉNARIO 2: MÉCANISMES DE BACKUP
+# ==============================================================================
+
+def render_backup_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1: int, K2: int):
+    """Scénario 2: Impact du backup sur les pages blanches."""
+    st.header("💾 Scénario 2: Mécanismes de Backup")
+    
+    st.markdown("""
+    <div class="scenario-box">
+    <strong>Problématique:</strong> Quand la file 2 est saturée, les résultats sont perdus → <em>pages blanches</em><br><br>
+    <strong>Solution:</strong> Sauvegarder les résultats avant insertion dans la file 2
+    </div>
+    """, unsafe_allow_html=True)
     
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.subheader("Comportement par type d'etudiant")
+        st.subheader("📊 Sans backup")
         
-        # Tableau des caractéristiques
+        lambda_rate = st.slider("λ - Taux d'arrivée", 10.0, 100.0, 40.0, key="backup_lambda")
+        
+        # Calculer les probabilités
+        rho2 = lambda_rate / mu_rate2
+        
+        if rho2 < 1:
+            # M/M/1/K2
+            P0 = (1 - rho2) / (1 - rho2 ** (K2 + 1))
+            P_K2 = P0 * (rho2 ** K2)
+        else:
+            P_K2 = 1 / (K2 + 1)
+        
+        # Probabilité de page blanche sans backup
+        # P_K1 approximée (simplification)
+        rho1 = lambda_rate / (n_servers * mu_rate1)
+        P_K1 = max(0, min(0.1, (rho1 - 0.8) / 0.2)) if rho1 > 0.8 else 0
+        
+        P_blank_no_backup = (1 - P_K1) * P_K2
+        
+        st.metric("Taux de saturation File 2 (ρ₂)", f"{rho2:.2%}")
+        st.metric("P(file 2 pleine)", f"{P_K2:.4%}")
+        st.metric("🚨 Probabilité page blanche", f"{P_blank_no_backup:.4%}")
+        
+        st.markdown(f"""
+        <div class="formula-box">
+        P_blank = (1 - P_K₁) × P_K₂<br>
+        = (1 - {P_K1:.4f}) × {P_K2:.4f}<br>
+        = <strong>{P_blank_no_backup:.6f}</strong>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.subheader("✅ Avec backup")
+        
+        backup_mode = st.radio(
+            "Type de backup",
+            ["Systématique (p=100%)", "Aléatoire (p variable)"],
+            key="backup_mode"
+        )
+        
+        if backup_mode == "Aléatoire (p variable)":
+            p_backup = st.slider("Probabilité de backup (p)", 0.0, 1.0, 0.5, 0.05, key="backup_p")
+        else:
+            p_backup = 1.0
+        
+        # Impact du backup sur le temps
+        mu_backup = st.slider("μ_backup (sauvegardes/min)", 10.0, 100.0, 50.0, key="backup_mu")
+        
+        # Nouveau calcul avec backup
+        P_blank_with_backup = (1 - P_K1) * P_K2 * (1 - p_backup)
+        
+        st.metric("Probabilité de backup", f"{p_backup:.0%}")
+        st.metric("✅ Nouvelle prob. page blanche", f"{P_blank_with_backup:.6%}")
+        
+        reduction = (P_blank_no_backup - P_blank_with_backup) / P_blank_no_backup * 100 if P_blank_no_backup > 0 else 0
+        st.metric("📉 Réduction", f"{reduction:.1f}%")
+        
+        # Temps de backup additionnel
+        T_backup = 1 / mu_backup
+        st.metric("⏱️ Temps de backup ajouté", f"{T_backup:.3f} min")
+    
+    st.divider()
+    
+    # Visualisation
+    st.subheader("📈 Impact du backup selon la charge")
+    
+    lambda_range = np.linspace(10, 100, 50)
+    p_blank_no = []
+    p_blank_50 = []
+    p_blank_100 = []
+    
+    for lam in lambda_range:
+        rho2 = lam / mu_rate2
+        if rho2 < 1:
+            P0 = (1 - rho2) / (1 - rho2 ** (K2 + 1))
+            pk2 = P0 * (rho2 ** K2)
+        else:
+            pk2 = 1 / (K2 + 1)
+        
+        rho1 = lam / (n_servers * mu_rate1)
+        pk1 = max(0, min(0.1, (rho1 - 0.8) / 0.2)) if rho1 > 0.8 else 0
+        
+        p_blank_no.append((1 - pk1) * pk2 * 100)
+        p_blank_50.append((1 - pk1) * pk2 * 0.5 * 100)
+        p_blank_100.append(0)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=lambda_range, y=p_blank_no, name='Sans backup', line=dict(color='red')))
+    fig.add_trace(go.Scatter(x=lambda_range, y=p_blank_50, name='Backup 50%', line=dict(color='orange')))
+    fig.add_trace(go.Scatter(x=lambda_range, y=p_blank_100, name='Backup 100%', line=dict(color='green')))
+    
+    fig.update_layout(
+        xaxis_title="Taux d'arrivée λ (tags/min)",
+        yaxis_title="Probabilité page blanche (%)",
+        height=400,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02)
+    )
+    st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
+    
+    # Trade-off
+    st.subheader("⚖️ Compromis Backup")
+    
+    st.markdown("""
+    | Aspect | Sans backup | Backup systématique | Backup aléatoire |
+    |--------|-------------|---------------------|------------------|
+    | Pages blanches | Possible | **0%** | Réduit |
+    | Latence | Minimale | +T_backup | +p×T_backup |
+    | Stockage | Aucun | Maximum | Réduit |
+    | Complexité | Simple | Moyenne | Moyenne |
+    """)
+
+
+# ==============================================================================
+# CHANNELS & DAMS: POPULATIONS DIFFÉRENCIÉES
+# ==============================================================================
+
+def render_channels_dams_tab(mu_rate1: float, n_servers: int, K1: int):
+    """Onglet Channels & Dams pour populations différenciées."""
+    st.header("👥 Channels & Dams: Populations Différenciées")
+    
+    st.markdown("""
+    <div class="scenario-box">
+    <strong>Constat:</strong> Les différentes populations ont des besoins distincts<br>
+    <ul>
+        <li><strong>Prépa SUP/SPÉ</strong>: Soumissions groupées à la deadline</li>
+        <li><strong>ING1</strong>: Soumissions fréquentes, traitement immédiat</li>
+        <li><strong>Admin/Staff</strong>: Priorité pour tests continus</li>
+    </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Créer les personas
+    personas = PersonaFactory.create_all_personas()
+    
+    # Afficher les caractéristiques
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.subheader("📊 Caractéristiques des populations")
+        
         data = []
         for student_type, persona in personas.items():
             data.append({
-                'Type': persona.name,
+                'Population': persona.name,
+                'Effectif': persona.population_size,
                 'Taux base (sub/h)': persona.base_submission_rate,
-                'Variance (CV2)': f"{persona.variance_coefficient:.2f}",
-                'Procrastination': f"{persona.procrastination_level:.0%}",
-                'Heures pic': ', '.join(f"{h}h" for h in persona.peak_hours[:3])
+                'Variance': f"{persona.variance_coefficient:.2f}",
+                'Procrastination': f"{persona.procrastination_level:.0%}"
             })
         
         df = pd.DataFrame(data)
         st.dataframe(df, use_container_width=True)
     
     with col2:
-        st.subheader("Taux d'arrivée sur 24h")
+        st.subheader("📈 Patterns d'arrivée sur 24h")
         
-        # Générer les courbes de taux d'arrivée
         hours = list(range(24))
         fig = go.Figure()
         
@@ -588,744 +828,653 @@ def render_personas_tab():
             fig.add_trace(go.Scatter(
                 x=hours, y=rates,
                 mode='lines+markers',
-                name=persona.name
+                name=persona.name,
+                line=dict(width=2)
             ))
         
         fig.update_layout(
             xaxis_title='Heure',
             yaxis_title='Taux d\'arrivée (sub/h)',
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            height=400
+            height=350,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02)
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
     
-    # Section deadline
-    st.subheader("Impact d'une deadline")
+    st.divider()
+    
+    # Stratégies de régulation
+    st.subheader("🎛️ Stratégies de Régulation")
+    
+    strategy = st.radio(
+        "Stratégie",
+        ["File unique (actuel)", "Dam - Blocage périodique", "Channels - Files séparées", "Hybride - Pool avec priorités"],
+        horizontal=True
+    )
+    
+    if strategy == "Dam - Blocage périodique":
+        st.markdown("""
+        **Principe:** Bloquer périodiquement la moulinette pour grouper les traitements
+        
+        - Fermée pendant t_b
+        - Ouverte pendant t_b/2
+        """)
+        
+        t_block = st.slider("Durée de blocage t_b (min)", 5, 60, 15)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Période fermée", f"{t_block} min")
+        with col2:
+            st.metric("Période ouverte", f"{t_block/2} min")
+        
+        # Visualisation du cycle
+        fig = go.Figure()
+        x = []
+        y = []
+        for i in range(5):
+            # Fermé
+            x.extend([i * 1.5 * t_block, i * 1.5 * t_block + t_block])
+            y.extend([0, 0])
+            # Ouvert
+            x.extend([i * 1.5 * t_block + t_block, i * 1.5 * t_block + 1.5 * t_block])
+            y.extend([1, 1])
+        
+        fig.add_trace(go.Scatter(x=x, y=y, mode='lines', fill='tozeroy', name='État'))
+        fig.update_layout(
+            xaxis_title="Temps (min)",
+            yaxis=dict(tickvals=[0, 1], ticktext=['Fermé', 'Ouvert']),
+            height=200
+        )
+        st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
+    
+    elif strategy == "Channels - Files séparées":
+        st.markdown("""
+        **Principe:** Une file dédiée par population avec ressources allouées
+        """)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        total_servers = n_servers
+        
+        with col1:
+            servers_sup = st.number_input("Serveurs SUP", 1, total_servers, max(1, total_servers//4))
+        with col2:
+            servers_spe = st.number_input("Serveurs SPÉ", 1, total_servers, max(1, total_servers//4))
+        with col3:
+            servers_ing = st.number_input("Serveurs ING1", 1, total_servers, max(1, total_servers//4))
+        with col4:
+            servers_admin = st.number_input("Serveurs Admin", 1, total_servers, max(1, total_servers//8))
+        
+        total_alloc = servers_sup + servers_spe + servers_ing + servers_admin
+        st.info(f"Total alloué: {total_alloc} serveurs (disponibles: {total_servers})")
+    
+    elif strategy == "Hybride - Pool avec priorités":
+        st.markdown("""
+        **Principe:** Pool partagé avec ordonnancement à priorités
+        
+        Les admins/staff ont la priorité la plus haute, suivis des ING1, puis des Prépas.
+        """)
+        
+        priorities = st.multiselect(
+            "Ordre de priorité (haut → bas)",
+            ["Admin/Staff", "ING1", "Prépa SPÉ", "Prépa SUP"],
+            default=["Admin/Staff", "ING1", "Prépa SPÉ", "Prépa SUP"]
+        )
+        
+        if priorities:
+            st.markdown("**Ordre de traitement:**")
+            for i, p in enumerate(priorities, 1):
+                st.write(f"{i}. {p}")
+    
+    st.divider()
+    
+    # Impact deadline
+    st.subheader("⏰ Impact d'une Deadline")
     
     hours_to_deadline = st.slider("Heures avant deadline", 0.0, 48.0, 24.0, 0.5)
     
-    # Calculer l'impact
     impact_data = []
     for student_type, persona in personas.items():
-        base_rate = persona.get_arrival_rate(14)  # 14h comme référence
+        base_rate = persona.get_arrival_rate(14)
         deadline_rate = persona.get_arrival_rate(14, hours_to_deadline=hours_to_deadline)
         multiplier = deadline_rate / base_rate if base_rate > 0 else 1.0
         
         impact_data.append({
-            'Type': persona.name,
+            'Population': persona.name,
             'Taux normal': base_rate,
-            'Taux avec deadline': deadline_rate,
+            'Taux deadline': deadline_rate,
             'Multiplicateur': multiplier
         })
     
-    fig = go.Figure()
     df_impact = pd.DataFrame(impact_data)
     
-    fig.add_trace(go.Bar(
-        x=df_impact['Type'],
-        y=df_impact['Taux normal'],
-        name='Normal'
-    ))
-    fig.add_trace(go.Bar(
-        x=df_impact['Type'],
-        y=df_impact['Taux avec deadline'],
-        name=f'Deadline dans {hours_to_deadline}h'
-    ))
-    
-    fig.update_layout(barmode='group', height=350)
-    st.plotly_chart(fig, use_container_width=True)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=df_impact['Population'], y=df_impact['Taux normal'], name='Normal'))
+    fig.add_trace(go.Bar(x=df_impact['Population'], y=df_impact['Taux deadline'], name=f'Deadline {hours_to_deadline:.0f}h'))
+    fig.update_layout(barmode='group', height=350, yaxis_title="Soumissions/heure")
+    st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
 
-def render_rush_simulation_tab(mu_rate1, mu_rate2, n_servers, buffer_size):
-    """Onglet de simulation de rush basé sur les Personas."""
-    st.header("Simulation - Moulinette EPITA")
 
-    # 1. Configuration du Système (Chaîne de 2 queues)
-    moulinette = MoulinetteSystem()
-    
-    # Configuration des serveurs (capacité totale répartie ou ajustée)
-    # Queue 1 : Pré-tri / Compilation (M/M/c)
-    queue1 = GenericQueue(lambda_rate=1, mu_rate=mu_rate1, c=n_servers, kendall_notation=f'M/M/{n_servers}', K=buffer_size)
-    # Queue 2 : Tests / Validation (M/M/1 - goulot d'étranglement typique)
-    queue2 = GenericQueue(lambda_rate=1, mu_rate=mu_rate2, c=1, kendall_notation="M/M/1", K=buffer_size)
-    
-    moulinette.configure_chain([queue1, queue2])
+# ==============================================================================
+# OPTIMISATION COÛT / QUALITÉ DE SERVICE
+# ==============================================================================
 
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        st.subheader("Scénario")
-        
-        # Choix du mode de simulation
-        sim_mode = st.radio(
-            "Mode de génération de charge",
-            ["Synthétique (Gaussienne)", "Basé sur les Personas (Réaliste)"]
-        )
-        
-        duration = st.slider("Durée simulation (h)", 1.0, 48.0, 24.0, 1.0)
-        
-        if sim_mode == "Synthétique (Gaussienne)":
-            base_lambda = st.slider("Taux de base λ (sub/h)", 10.0, 200.0, 50.0, 10.0)
-            peak_multiplier = st.slider("Multiplicateur de pic", 1.5, 10.0, 3.0, 0.5)
-            rush_center = st.slider("Pic du rush (fraction du temps)", 0.1, 0.9, 0.7, 0.1)
-            
-            # Fonction lambda simple (mathématique)
-            def lambda_profile_func(t):
-                x = t / duration
-                width = 0.15
-                rush = np.exp(-((x - rush_center) ** 2) / (2 * width ** 2))
-                return base_lambda * (1 + rush * (peak_multiplier - 1))
-                
-        else: # Mode Personas
-            st.info("La charge est calculée en fonction de la population étudiante définie dans 'Personas'.")
-            hours_to_deadline = st.slider("Heures avant deadline (au début)", duration, duration + 48.0, duration, 1.0)
-            start_hour = st.slider("Heure de début de simulation", 0, 23, 8)
-            
-            # Récupérer les personas
-            personas = PersonaFactory.create_all_personas()
-            
-            # Permettre de désactiver certains types d'étudiants pour tester
-            selected_types = st.multiselect(
-                "Populations actives",
-                [p.student_type.name for p in personas.values()],
-                default=[p.student_type.name for p in personas.values()]
-            )
-            
-            # Fonction lambda complexe (basée sur les agents)
-            def lambda_profile_func(t):
-                current_hour = (start_hour + int(t)) % 24
-                # Temps restant avant deadline qui diminue au fur et à mesure que t avance
-                remaining_time = max(0, hours_to_deadline - t)
-                
-                total_rate = 0.0
-                for p in personas.values():
-                    if p.student_type.name in selected_types:
-                        total_rate += p.get_arrival_rate(
-                            hour=current_hour, 
-                            is_weekend=False, 
-                            hours_to_deadline=remaining_time
-                        )
-                return total_rate
-
-        save_rush = st.checkbox("Sauvegarder la simulation Rush", value=True)
-        run_button = st.button("Lancer la simulation", type="primary")
-
-    with col2:
-        # Prévisualisation de la courbe de charge
-        st.subheader("Charge prévue λ(t)")
-        t_preview = np.linspace(0, duration, 100)
-        lambda_values = [lambda_profile_func(t) for t in t_preview]
-        
-        fig_profile = go.Figure()
-        fig_profile.add_trace(go.Scatter(
-            x=t_preview, y=lambda_values,
-            mode='lines', fill='tozeroy',
-            name='Taux d\'arrivée',
-            line=dict(color='#1f77b4')
-        ))
-        
-        # Ajouter une ligne rouge pour la capacité théorique totale du système
-        total_capacity = (n_servers) * mu_rate1 * 60 # 4 serveurs * mu (converti en heure si mu est en min)
-        # Note: Dans ton code mu_rate semble être par minute, donc * 60 pour l'heure
-        
-        fig_profile.add_hline(
-            y=total_capacity, 
-            line_dash="dash", line_color="red",
-            annotation_text="Capacité théorique max"
-        )
-        
-        fig_profile.update_layout(
-            xaxis_title="Temps (h)",
-            yaxis_title="Soumissions / heure",
-            height=300,
-            margin=dict(t=20, b=20)
-        )
-        st.plotly_chart(fig_profile, use_container_width=True)
-
-    if run_button:
-        with st.spinner("Simulation du système de moulinette en cours..."):
-            try:
-                # Lancement de la simulation via le système évolutif
-                # On passe directement la fonction lambda_profile_func
-                report = moulinette.simulate_evolving(lambda_profile_func, duration)
-
-                # --- AFFICHAGE DES RÉSULTATS (Code existant conservé et nettoyé) ---
-                
-                # KPIs Globaux
-                st.divider()
-                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-                kpi1.metric("Temps Attente Moy.", f"{report.avg_waiting_time*60:.1f} min")
-                kpi2.metric("Queue Max (Clients)", f"{int(max([np.max(r.queue_length_trace) if len(r.queue_length_trace) > 0 else 0 for r in report.simulation_results]))}")
-                kpi3.metric("Taux de Rejet", f"{report.rejection_rate:.2%}")
-                kpi4.metric("Total Servis", f"{sum(r.n_served for r in report.simulation_results)}")
-
-                # Graphiques temporels
-                st.subheader("Dynamique des Queues")
-                
-                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                    subplot_titles=("Longueur des files d'attente", "Temps d'attente par client"))
-
-                colors = ['#EF553B', '#FFA15A'] # Couleurs Plotly
-
-                fig.update_xaxes(
-                    row=1, col=1,
-                    type="linear",
-                    showticklabels=True,
-                    range=[0, duration],
-                    tickmode="linear",
-                    dtick=2
-                )
-                fig.update_xaxes(
-                    row=2, col=1,
-                    type="linear",
-                    showticklabels=True,
-                    range=[0, duration],
-                    tickmode="linear",
-                    dtick=2
-                )
-
-                # Trace Queue Lengths
-                for i, res in enumerate(report.simulation_results):
-                    if len(res.time_trace) > 0:
-                        fig.add_trace(go.Scatter(
-                            x=res.time_trace, 
-                            y=res.queue_length_trace,
-                            name=f"Queue {i+1} ({moulinette._queue_chain.queues[i].kendall_notation})",
-                            mode='lines',
-                            line=dict(width=2)
-                        ), row=1, col=1)
-
-                # Trace Waiting Times (Scatter)
-                for i, res in enumerate(report.simulation_results):
-                    if len(res.arrival_times) > 0 and len(res.waiting_times) > 0:
-                        # On sous-échantillonne si trop de points pour la performance
-                        step = max(1, len(res.waiting_times) // 500)
-                        fig.add_trace(go.Scatter(
-                            x=res.arrival_times[::step], 
-                            y=res.waiting_times[::step] * 60, # conversion en minutes
-                            name=f"Attente Q{i+1}",
-                            mode='markers',
-                            marker=dict(size=4, opacity=0.5)
-                        ), row=2, col=1)
-
-                fig.update_layout(height=600, showlegend=True)
-                fig.update_yaxes(title_text="Clients", row=1, col=1)
-                fig.update_yaxes(title_text="Minutes", row=2, col=1)
-                fig.update_xaxes(title_text="Temps de simulation (h)", row=2, col=1)
-                fig.update_xaxes(title_text="Temps de simulation (h)", row=1, col=1)
-                
-                st.plotly_chart(fig, use_container_width=True)
-
-                if save_rush:
-                    sim_dir = Path(__file__).parent.parent.parent / "simulations" / "moulinette_simulations"
-                    sim_dir.mkdir(parents=True, exist_ok=True)
-
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"rush_simulation_{timestamp}.json"
-                    filepath = sim_dir / filename
-
-                    # Agrégations globales simples et robustes
-                    total_arrivals = sum(r.n_arrivals for r in report.simulation_results)
-                    total_served = sum(r.n_served for r in report.simulation_results)
-                    total_rejected = sum(r.n_rejected for r in report.simulation_results)
-
-                    all_waiting = np.concatenate([r.waiting_times for r in report.simulation_results if len(r.waiting_times) > 0]) \
-                        if any(len(r.waiting_times) > 0 for r in report.simulation_results) else np.array([])
-
-                    all_system = np.concatenate([r.system_times for r in report.simulation_results if len(r.system_times) > 0]) \
-                        if any(len(r.system_times) > 0 for r in report.simulation_results) else np.array([])
-
-                    save_data = {
-                        "timestamp": timestamp,
-
-                        # --- paramètres simul —
-                        "rush_parameters": {
-                            "mu_rate_exec": mu_rate1,
-                            "mu_rate_results": mu_rate2,
-                            "n_servers": n_servers,
-                            "buffer_size": buffer_size,
-                            "duration_hours": duration,
-                            "mode": sim_mode
-                        },
-
-                        # --- résultats globaux —
-                        "system_results": {
-                            "total_arrivals": int(total_arrivals),
-                            "total_served": int(total_served),
-                            "total_rejected": int(total_rejected),
-                            "reject_rate_percent":
-                                float(100 * total_rejected / total_arrivals) if total_arrivals > 0 else 0.0,
-                            "avg_waiting_time_minutes":
-                                float(np.mean(all_waiting) * 60) if len(all_waiting) > 0 else 0.0,
-                            "avg_system_time_minutes":
-                                float(np.mean(all_system) * 60) if len(all_system) > 0 else 0.0
-                        },
-
-                        # --- détails par queue —
-                        "queues": [
-                            {
-                                "index": i + 1,
-                                "kendall": moulinette._queue_chain.queues[i].kendall_notation,
-                                "served": int(r.n_served),
-                                "arrivals": int(r.n_arrivals),
-                                "rejected": int(r.n_rejected),
-                                "avg_waiting_minutes":
-                                    float(np.mean(r.waiting_times) * 60) if len(r.waiting_times) > 0 else 0.0,
-                                "max_queue_length":
-                                    int(np.max(r.queue_length_trace)) if len(r.queue_length_trace) > 0 else 0
-                            }
-                            for i, r in enumerate(report.simulation_results)
-                        ],
-
-                        # --- timeline globale si existante —
-                        "timeline": {
-                            "queues": [
-                                {
-                                    "queue": i + 1,
-                                    "time": r.time_trace.tolist() if len(r.time_trace) > 0 else [],
-                                    "queue_length": r.queue_length_trace.tolist() if len(r.queue_length_trace) > 0 else []
-                                }
-                                for i, r in enumerate(report.simulation_results)
-                            ]
-                        }
-                    }
-
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        json.dump(save_data, f, indent=2, ensure_ascii=False)
-
-                    st.success(f"Simulation Rush sauvegardée dans : {filepath}")
-
-            except Exception as e:
-                st.error(f"Erreur durant la simulation: {str(e)}")
-                # Afficher la stacktrace pour le debug
-                import traceback
-                st.code(traceback.format_exc())
-
-def render_optimization_tab(buffer_size):
-    """Onglet d'optimisation coût/performance avec heatmaps."""
-    st.header("Optimisation Cout / Performance")
+def render_optimization_tab(mu_rate: float, n_servers: int, buffer_size: int):
+    """Onglet d'optimisation coût/performance."""
+    st.header("💰 Optimisation Coût / Qualité de Service")
     
     st.markdown("""
-    Visualisation de l'impact des paramètres sur les métriques clés.
-    Ces heatmaps permettent d'identifier les zones de fonctionnement optimal.
+    <div class="formula-box">
+    <strong>Fonction objectif:</strong><br>
+    min [ α × E[T] + β × Coût(K, c, μ) ] avec α + β = 1
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("""
+    - **E[T]** = Temps moyen de séjour (temps d'attente + service)
+    - **Coût** = Coût serveurs + Coût rejets + Coût insatisfaction
+    - **α** = Poids accordé à la performance
+    - **β** = Poids accordé au coût
     """)
-    
-    # --- Section de configuration du taux d'arrivée ---
-    st.subheader("Configuration du taux d'arrivée")
-    
-    col_mode1, col_mode2 = st.columns([1, 2])
-    
-    with col_mode1:
-        input_mode = st.radio(
-            "Mode de saisie",
-            ["Manuel", "Depuis Personas"],
-            key="optim_input_mode"
-        )
-    
-    with col_mode2:
-        if input_mode == "Manuel":
-            lambda_rate = st.number_input(
-                "Taux d'arrivée λ (soumissions/min)",
-                min_value=1.0, max_value=200.0, value=30.0, step=1.0,
-                key="optim_lambda_manual"
-            )
-            selected_personas_names = ["Manuel"]
-        else:
-            # Mode Personas - sélection multiple (même logique que Simulation Rush)
-            # Récupérer tous les personas
-            personas = PersonaFactory.create_all_personas()
-            
-            selected_types = st.multiselect(
-                "Populations actives",
-                [p.student_type.name for p in personas.values()],
-                default=[p.student_type.name for p in personas.values()],
-                key="optim_persona_multiselect"
-            )
-            
-            if not selected_types:
-                st.warning("Veuillez sélectionner au moins un persona.")
-                lambda_rate = 0.0
-                selected_personas_names = []
-            else:
-                # Calculer le taux d'arrivée combiné de tous les personas sélectionnés
-                lambda_rate = 0.0
-                total_population = 0
-                details = []
-                selected_personas_names = []
-                
-                for p in personas.values():
-                    if p.student_type.name in selected_types:
-                        # Taux d'arrivée à 14h (heure de référence typique)
-                        persona_lambda = p.get_arrival_rate(hour=14) / 60.0  # Convertir en sub/min
-                        lambda_rate += persona_lambda
-                        total_population += p.population_size
-                        selected_personas_names.append(p.name)
-                        details.append(f"{p.name}: {persona_lambda:.2f} sub/min ({p.population_size} étudiants)")
-                
-                st.info(f"**Taux d'arrivée combiné**: λ = {lambda_rate:.2f} soumissions/min")
-                st.caption(f"Population totale: {total_population} étudiants")
-                with st.expander("Détail par persona"):
-                    for detail in details:
-                        st.write(f"• {detail}")
     
     st.divider()
     
-    # --- Section des paramètres de génération ---
-    st.subheader("Paramètres des Heatmaps")
-    
-    # Paramètres de coût
-    st.markdown("**Modèle de coût**")
-    col_cost1, col_cost2, col_cost3, col_cost4 = st.columns([1, 1, 1, 1])
-    
-    with col_cost1:
-        cost_per_server = st.number_input(
-            "Coût horaire/serveur (€/h)", 
-            min_value=0.1, max_value=100.0, value=0.5, step=0.1,
-            key="optim_cost_server",
-            help="Coût de fonctionnement par serveur par heure"
-        )
-    
-    with col_cost2:
-        fixed_cost_per_server = st.number_input(
-            "Coût fixe/serveur (€)", 
-            min_value=0.0, max_value=500.0, value=0.0, step=1.0,
-            key="optim_fixed_cost",
-            help="Coût fixe d'installation/maintenance par serveur (amorti sur 1h)"
-        )
-    
-    with col_cost3:
-        cost_per_mu = st.number_input(
-            "Coût/unité μ/serveur (€/h)",
-            min_value=0.0, max_value=10.0, value=0.1, step=0.05,
-            key="optim_cost_mu",
-            help="Coût supplémentaire par unité de performance (μ élevé = serveurs plus puissants/chers)"
-        )
-    
-    with col_cost4:
-        penalty_per_min = st.number_input(
-            "Pénalité/min attente (€)", 
-            min_value=0.0, max_value=10.0, value=0.05, step=0.01,
-            key="optim_penalty",
-            help="Coût de pénalité par minute d'attente par client"
-        )
-    
-    # Pondération coût vs temps
-    st.markdown("**Contraintes de qualité**")
-    col_qos1, col_qos2 = st.columns([1, 1])
-    with col_qos1:
-        acceptable_wait_time = st.slider(
-            "Temps d'attente acceptable Wq (min)",
-            min_value=1.0, max_value=15.0, value=5.0, step=0.5,
-            key="optim_acceptable_wait",
-            help="Temps d'attente considéré comme acceptable. Au-dessus, forte pénalité."
-        )
-    with col_qos2:
-        target_rho = st.slider(
-            "Taux utilisation cible ρ",
-            min_value=0.5, max_value=0.9, value=0.7, step=0.05,
-            key="optim_target_rho",
-            help="Taux d'utilisation optimal visé pour minimiser les coûts"
-        )
-    
-    st.markdown("**Pondération du compromis**")
-    col_weight1, col_weight2 = st.columns([2, 1])
-    with col_weight1:
-        alpha = st.slider(
-            "Poids du coût vs temps d'attente",
-            min_value=0.0, max_value=1.0, value=0.9, step=0.05,
-            key="optim_alpha",
-            help="0 = priorité temps d'attente, 1 = priorité coût. Valeur élevée = favorise économies"
-        )
-    with col_weight2:
-        st.markdown(f"""  
-        - Poids coût: **{alpha:.0%}**  
-        - Poids temps: **{1-alpha:.0%}**
-        """)
-    
-    st.markdown("**Paramètres de simulation**")
-    col1, col2, col3 = st.columns([1, 1, 1])
+    # Configuration
+    col1, col2 = st.columns([1, 1])
     
     with col1:
-        max_servers = st.slider(
-            "Nombre max de serveurs", 
-            min_value=5, max_value=30, value=15,
-            key="optim_max_servers"
-        )
+        st.subheader("📊 Taux d'arrivée")
+        
+        input_mode = st.radio("Source", ["Manuel", "Personas"], horizontal=True)
+        
+        if input_mode == "Manuel":
+            lambda_rate = st.number_input("λ (soumissions/min)", 1.0, 200.0, 30.0, key="opt_lambda")
+        else:
+            personas = PersonaFactory.create_all_personas()
+            selected = st.multiselect(
+                "Populations actives",
+                [p.name for p in personas.values()],
+                default=[p.name for p in personas.values()]
+            )
+            
+            lambda_rate = 0.0
+            for p in personas.values():
+                if p.name in selected:
+                    lambda_rate += p.get_arrival_rate(14) / 60.0
+            
+            st.info(f"λ combiné = {lambda_rate:.2f} sub/min")
     
     with col2:
-        mu_min = st.number_input(
-            "Taux de service min μ (par serveur/min)",
-            min_value=1.0, max_value=20.0, value=5.0, step=1.0,
-            key="optim_mu_min"
-        )
-        mu_max = st.number_input(
-            "Taux de service max μ (par serveur/min)",
-            min_value=5.0, max_value=50.0, value=25.0, step=1.0,
-            key="optim_mu_max"
-        )
+        st.subheader("⚖️ Pondération")
+        
+        alpha = st.slider("α (poids coût)", 0.0, 1.0, 0.7, 0.05)
+        st.write(f"β (poids temps) = {1-alpha:.2f}")
+        
+        st.markdown("---")
+        st.subheader("💵 Modèle de coût")
+        
+        cost_server = st.number_input("Coût serveur (€/h)", 0.1, 10.0, 0.50, 0.1)
+        cost_reject = st.number_input("Coût rejet (€)", 0.01, 1.0, 0.05, 0.01)
+        cost_wait = st.number_input("Pénalité attente (€/min)", 0.001, 0.1, 0.01, 0.001)
     
+    st.divider()
+    
+    # Paramètres de recherche
+    st.subheader("🔍 Espace de recherche")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        max_servers = st.slider("Max serveurs", 5, 30, 15)
+    with col2:
+        mu_min = st.number_input("μ min", 5.0, 20.0, 5.0)
+        mu_max = st.number_input("μ max", 10.0, 50.0, 25.0)
     with col3:
-        resolution = st.slider(
-            "Résolution (points par axe)", 
-            min_value=10, max_value=50, value=20,
-            key="optim_resolution"
-        )
+        resolution = st.slider("Résolution", 10, 40, 20)
     
-    generate_btn = st.button("Générer les Heatmaps", type="primary", key="optim_generate")
+    if st.button("🚀 Lancer l'optimisation", type="primary"):
+        run_optimization(lambda_rate, alpha, cost_server, cost_reject, cost_wait,
+                        max_servers, mu_min, mu_max, resolution)
+
+
+def run_optimization(lambda_rate, alpha, cost_server, cost_reject, cost_wait,
+                    max_servers, mu_min, mu_max, resolution):
+    """Exécute l'optimisation et affiche les heatmaps."""
     
-    # --- Génération des heatmaps ---
-    if generate_btn:
-        with st.spinner("Génération des heatmaps en cours..."):
-            # Définir les plages
-            server_range = np.arange(1, max_servers + 1)
-            mu_range = np.linspace(mu_min, mu_max, resolution)
-            
-            # Créer les matrices pour chaque métrique
-            Z_cost = np.zeros((len(mu_range), len(server_range)))
-            Z_wait = np.zeros((len(mu_range), len(server_range)))
-            Z_rho = np.zeros((len(mu_range), len(server_range)))  # Taux d'utilisation
-            
-            # Remplir les matrices
-            for i, mu_rate in enumerate(mu_range):
-                for j, n_servers in enumerate(server_range):
+    with st.spinner("Optimisation en cours..."):
+        server_range = np.arange(1, max_servers + 1)
+        mu_range = np.linspace(mu_min, mu_max, resolution)
+        
+        Z_cost = np.zeros((len(mu_range), len(server_range)))
+        Z_time = np.zeros((len(mu_range), len(server_range)))
+        Z_score = np.zeros((len(mu_range), len(server_range)))
+        
+        for i, mu in enumerate(mu_range):
+            for j, c in enumerate(server_range):
+                rho = lambda_rate / (c * mu)
+                
+                if rho >= 1:
+                    Z_cost[i, j] = np.nan
+                    Z_time[i, j] = np.nan
+                    Z_score[i, j] = np.nan
+                else:
                     try:
-                        # Vérifier la stabilité: lambda < c * mu
-                        if lambda_rate >= n_servers * mu_rate:
-                            # Système instable
-                            Z_cost[i, j] = np.nan
-                            Z_wait[i, j] = np.nan
-                            Z_rho[i, j] = np.nan
-                        else:
-                            queue = GenericQueue(lambda_rate, mu_rate, "M/M/c", int(n_servers))
-                            metrics = queue.compute_theoretical_metrics()
-                            
-                            # Taux d'utilisation
-                            rho = lambda_rate / (n_servers * mu_rate)
-                            Z_rho[i, j] = rho
-                            
-                            # Temps d'attente Wq
-                            wq = metrics.Wq
-                            Z_wait[i, j] = wq  # Pas de cap pour le calcul
-                            
-                            # Coût total = coût fixe + coût horaire + coût performance + pénalité attente
-                            # Coût fixe par serveur (amorti sur 1h)
-                            fixed_cost = n_servers * fixed_cost_per_server
-                            # Coût horaire de fonctionnement
-                            hourly_cost = n_servers * cost_per_server
-                            # Coût de performance : serveurs plus rapides coûtent plus cher
-                            performance_cost = n_servers * mu_rate * cost_per_mu
-                            # Coût de pénalité d'attente (par client par minute, multiplié par le débit)
-                            # lambda_rate est en sub/min, donc lambda_rate * 60 = clients/heure
-                            # wq est en minutes
-                            wait_cost = wq * penalty_per_min * lambda_rate * 60
-                            
-                            # Pénalité pour taux d'utilisation non optimal
-                            # Si rho est trop bas : gaspillage de ressources
-                            # Si rho est trop haut : risque de saturation
-                            # Pénalité proportionnelle à l'écart par rapport au target_rho
-                            rho_penalty_factor = abs(rho - target_rho) * 2.0  # Facteur de pénalité
-                            utilization_penalty = (fixed_cost + hourly_cost + performance_cost) * rho_penalty_factor
-                            
-                            total_cost = fixed_cost + hourly_cost + performance_cost + wait_cost + utilization_penalty
-                            Z_cost[i, j] = total_cost
-                    except Exception:
+                        queue = GenericQueue(lambda_rate, mu, f"M/M/{int(c)}", c=int(c))
+                        metrics = queue.compute_theoretical_metrics()
+                        
+                        # Coût horaire
+                        server_cost = c * cost_server
+                        wait_cost = metrics.Wq * cost_wait * lambda_rate * 60
+                        total_cost = server_cost + wait_cost
+                        
+                        Z_cost[i, j] = total_cost
+                        Z_time[i, j] = metrics.W
+                        
+                        # Score normalisé
+                        Z_score[i, j] = alpha * total_cost + (1 - alpha) * metrics.W
+                        
+                    except:
                         Z_cost[i, j] = np.nan
-                        Z_wait[i, j] = np.nan
-                        Z_rho[i, j] = np.nan
-            
-            # Normaliser pour la moyenne (échelles différentes)
-            # Normalisation min-max pour chaque matrice
-            def normalize_matrix(Z):
-                Z_flat = Z[~np.isnan(Z)]
-                if len(Z_flat) == 0:
-                    return Z
-                z_min, z_max = np.nanmin(Z_flat), np.nanmax(Z_flat)
-                if z_max - z_min == 0:
-                    return np.zeros_like(Z)
-                return (Z - z_min) / (z_max - z_min)
-            
-            # Normalisation spéciale pour le temps d'attente
-            # On pénalise surtout les temps > acceptable_wait_time
-            def normalize_wait_with_threshold(Z_wait, threshold):
-                Z_flat = Z_wait[~np.isnan(Z_wait)]
-                if len(Z_flat) == 0:
-                    return Z_wait
-                
-                # Créer une pénalité progressive
-                Z_normalized = np.zeros_like(Z_wait)
-                for i in range(Z_wait.shape[0]):
-                    for j in range(Z_wait.shape[1]):
-                        wq = Z_wait[i, j]
-                        if np.isnan(wq):
-                            Z_normalized[i, j] = np.nan
-                        elif wq <= threshold:
-                            # Temps acceptable : score faible (bon)
-                            Z_normalized[i, j] = wq / threshold * 0.3  # Max 0.3 si <= seuil
-                        else:
-                            # Temps trop élevé : pénalité forte
-                            excess_ratio = (wq - threshold) / threshold
-                            Z_normalized[i, j] = 0.3 + min(excess_ratio, 2.0) * 0.35  # 0.3 à 1.0
-                
-                return Z_normalized
-            
-            Z_cost_norm = normalize_matrix(Z_cost)
-            Z_wait_norm = normalize_wait_with_threshold(Z_wait, acceptable_wait_time)
-            # Score combiné pondéré: alpha * coût + (1-alpha) * temps
-            Z_avg = alpha * Z_cost_norm + (1 - alpha) * Z_wait_norm
-            
-            # Appliquer un cap pour la visualisation
-            Z_wait_display = np.minimum(Z_wait, 10)  # Cap à 10 min pour affichage
-            Z_cost_display = np.minimum(Z_cost, np.nanpercentile(Z_cost[~np.isnan(Z_cost)], 95) if not np.all(np.isnan(Z_cost)) else 100)
-            
-            # --- Affichage des 3 heatmaps ---
-            st.markdown("---")
-            st.subheader("Résultats")
-            st.markdown(f"**Taux d'arrivée utilisé**: λ = {lambda_rate:.2f} soumissions/min")
-            st.markdown(f"**Pondération**: {alpha:.0%} coût / {1-alpha:.0%} temps d'attente")
-            st.markdown(f"**Temps d'attente acceptable**: ≤ {acceptable_wait_time} min (au-delà = forte pénalité)")
-            
-            # Heatmap 1: Coût
-            st.markdown("### 1. Heatmap du Coût Total (€/h)")
-            st.caption(f"Coût = (fixe: {fixed_cost_per_server}€/srv) + (horaire: {cost_per_server}€/h/srv) + (performance: {cost_per_mu}€/h/μ/srv) + (pénalité: {penalty_per_min}€/min/client)")
+                        Z_time[i, j] = np.nan
+                        Z_score[i, j] = np.nan
+        
+        # Normaliser le score pour affichage
+        valid = ~np.isnan(Z_score)
+        if valid.any():
+            Z_score_norm = (Z_score - np.nanmin(Z_score)) / (np.nanmax(Z_score) - np.nanmin(Z_score))
+        else:
+            st.error("Aucune configuration stable trouvée")
+            return
+        
+        # Afficher les heatmaps
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 💵 Heatmap Coût Total (€/h)")
             fig_cost = go.Figure(data=go.Heatmap(
-                z=Z_cost_display,
+                z=Z_cost,
                 x=server_range,
                 y=mu_range,
                 colorscale='RdYlGn_r',
-                colorbar=dict(title="Coût (€/h)"),
-                hoverongaps=False
+                colorbar=dict(title="€/h")
             ))
             fig_cost.update_layout(
-                xaxis_title='Nombre de serveurs',
-                yaxis_title='Taux de service μ (par serveur/min)',
-                height=450
+                xaxis_title='Nombre de serveurs (c)',
+                yaxis_title='Taux de service μ',
+                height=400
             )
-            st.plotly_chart(fig_cost, use_container_width=True)
-            
-            # Heatmap 2: Temps d'attente
-            st.markdown("### 2. Heatmap du Temps d'Attente Wq (min)")
-            fig_wait = go.Figure(data=go.Heatmap(
-                z=Z_wait_display,
+            st.plotly_chart(apply_dark_theme(fig_cost), use_container_width=True)
+        
+        with col2:
+            st.markdown("### ⏱️ Heatmap Temps de Séjour (min)")
+            fig_time = go.Figure(data=go.Heatmap(
+                z=Z_time,
                 x=server_range,
                 y=mu_range,
                 colorscale='RdYlGn_r',
-                colorbar=dict(title="Wq (min)"),
-                hoverongaps=False
+                colorbar=dict(title="min")
             ))
-            fig_wait.update_layout(
-                xaxis_title='Nombre de serveurs',
-                yaxis_title='Taux de service μ (par serveur/min)',
-                height=450
+            fig_time.update_layout(
+                xaxis_title='Nombre de serveurs (c)',
+                yaxis_title='Taux de service μ',
+                height=400
             )
-            st.plotly_chart(fig_wait, use_container_width=True)
+            st.plotly_chart(apply_dark_theme(fig_time), use_container_width=True)
+        
+        # Score combiné
+        st.markdown("### 🎯 Heatmap Score Combiné (α×Coût + β×Temps)")
+        fig_score = go.Figure(data=go.Heatmap(
+            z=Z_score_norm,
+            x=server_range,
+            y=mu_range,
+            colorscale='RdYlGn_r',
+            colorbar=dict(title="Score")
+        ))
+        fig_score.update_layout(
+            xaxis_title='Nombre de serveurs (c)',
+            yaxis_title='Taux de service μ',
+            height=400
+        )
+        st.plotly_chart(apply_dark_theme(fig_score), use_container_width=True)
+        
+        # Configuration optimale
+        min_idx = np.nanargmin(Z_score)
+        min_i, min_j = np.unravel_index(min_idx, Z_score.shape)
+        
+        opt_mu = mu_range[min_i]
+        opt_c = server_range[min_j]
+        opt_cost = Z_cost[min_i, min_j]
+        opt_time = Z_time[min_i, min_j]
+        
+        st.success(f"""
+        ### ✅ Configuration Optimale
+        
+        | Paramètre | Valeur |
+        |-----------|--------|
+        | **Serveurs (c)** | {opt_c} |
+        | **Taux service (μ)** | {opt_mu:.2f}/min |
+        | **Coût total** | {opt_cost:.2f} €/h |
+        | **Temps de séjour** | {opt_time:.3f} min |
+        | **Utilisation (ρ)** | {lambda_rate/(opt_c*opt_mu):.1%} |
+        """)
+
+
+# ==============================================================================
+# AUTO-SCALING
+# ==============================================================================
+
+def render_autoscaling_tab(mu_rate1: float, mu_rate2: float, n_servers: int, K1: int, K2: int):
+    """Onglet des stratégies d'auto-scaling."""
+    st.header("📈 Stratégies d'Auto-Scaling")
+    
+    st.markdown("""
+    <div class="scenario-box">
+    <strong>Objectif:</strong> Adapter dynamiquement le nombre de serveurs à la charge
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Types de scaling
+    scaling_type = st.radio(
+        "Stratégie de scaling",
+        ["🔒 Fixe", "📅 Programmé", "⚡ Réactif", "🔮 Prédictif"],
+        horizontal=True
+    )
+    
+    st.divider()
+    
+    if scaling_type == "🔒 Fixe":
+        st.markdown("""
+        **Scaling Fixe:** Nombre constant de serveurs
+        
+        ✅ Simple à gérer  
+        ❌ Pas d'adaptation à la charge
+        """)
+        
+        st.metric("Serveurs fixes", n_servers)
+    
+    elif scaling_type == "📅 Programmé":
+        st.markdown("""
+        **Scaling Programmé:** Nombre de serveurs selon l'heure
+        
+        ✅ Adapté aux patterns connus  
+        ❌ Ne gère pas les pics imprévus
+        """)
+        
+        st.subheader("Configuration horaire")
+        
+        schedule = {}
+        cols = st.columns(6)
+        for i, h in enumerate([0, 4, 8, 12, 16, 20]):
+            with cols[i]:
+                schedule[h] = st.number_input(f"{h}h-{h+4}h", 1, 20, n_servers, key=f"sched_{h}")
+        
+        # Visualisation
+        hours = list(range(24))
+        servers = []
+        for h in hours:
+            for start in sorted(schedule.keys(), reverse=True):
+                if h >= start:
+                    servers.append(schedule[start])
+                    break
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=hours, y=servers, mode='lines+markers', fill='tozeroy', name='Serveurs'))
+        fig.update_layout(xaxis_title="Heure", yaxis_title="Serveurs", height=300)
+        st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
+    
+    elif scaling_type == "⚡ Réactif":
+        st.markdown("""
+        **Scaling Réactif:** Ajustement basé sur la charge actuelle
+        
+        ✅ Réagit aux pics  
+        ❌ Temps de réaction (cooldown)
+        """)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            scale_up = st.slider("Seuil scale-up (ρ)", 0.5, 0.95, 0.8)
+            scale_up_inc = st.number_input("Serveurs à ajouter", 1, 5, 2)
+        with col2:
+            scale_down = st.slider("Seuil scale-down (ρ)", 0.1, 0.5, 0.3)
+            scale_down_inc = st.number_input("Serveurs à retirer", 1, 3, 1)
+        
+        cooldown = st.slider("Cooldown (min)", 1, 30, 10)
+        
+        st.markdown(f"""
+        **Règles:**
+        - Si ρ > {scale_up:.0%} → +{scale_up_inc} serveurs
+        - Si ρ < {scale_down:.0%} → -{scale_down_inc} serveur(s)
+        - Délai entre ajustements: {cooldown} min
+        """)
+    
+    elif scaling_type == "🔮 Prédictif":
+        st.markdown("""
+        **Scaling Prédictif:** Anticipation basée sur les données historiques
+        
+        ✅ Évite les temps de réaction  
+        ❌ Nécessite des données historiques
+        """)
+        
+        st.info("Le scaling prédictif utilise les patterns de soumission historiques pour anticiper la charge.")
+        
+        # Simulation d'une prédiction
+        st.subheader("Prédiction de charge (exemple)")
+        
+        hours = list(range(24))
+        predicted_load = [20 + 30 * np.sin((h - 14) * np.pi / 12) ** 2 for h in hours]
+        predicted_servers = [max(2, int(load / mu_rate1) + 1) for load in predicted_load]
+        
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(go.Scatter(x=hours, y=predicted_load, name="Charge prédite", line=dict(color='blue')), secondary_y=False)
+        fig.add_trace(go.Scatter(x=hours, y=predicted_servers, name="Serveurs recommandés", line=dict(color='green', dash='dash')), secondary_y=True)
+        fig.update_layout(height=350)
+        fig.update_yaxes(title_text="Charge (tags/min)", secondary_y=False)
+        fig.update_yaxes(title_text="Serveurs", secondary_y=True)
+        st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
+    
+    st.divider()
+    
+    # Comparaison des stratégies
+    st.subheader("📊 Comparaison des stratégies")
+    
+    comparison_data = {
+        'Stratégie': ['Fixe', 'Programmé', 'Réactif', 'Prédictif'],
+        'Réactivité': ['❌ Aucune', '⚠️ Limitée', '✅ Bonne', '✅ Excellente'],
+        'Complexité': ['✅ Simple', '⚠️ Moyenne', '⚠️ Moyenne', '❌ Complexe'],
+        'Coût': ['⚠️ Variable', '✅ Optimisé', '✅ Optimisé', '✅ Très optimisé'],
+        'Pics imprévus': ['❌ Non géré', '❌ Non géré', '✅ Géré', '⚠️ Partiellement']
+    }
+    
+    st.dataframe(pd.DataFrame(comparison_data), use_container_width=True)
+
+
+# ==============================================================================
+# BENCHMARK DES MODÈLES
+# ==============================================================================
+
+def render_benchmark_tab(mu_rate: float, n_servers: int, buffer_size: int):
+    """Onglet de benchmark comparatif des modèles de files."""
+    st.header("🔬 Benchmark des Modèles de Files d'Attente")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col2:
+        st.subheader("Sélection des modèles")
+        
+        st.markdown("**Mono-serveur:**")
+        show_mm1 = st.checkbox("M/M/1", value=True, key="b_mm1")
+        show_md1 = st.checkbox("M/D/1", value=True, key="b_md1")
+        show_mg1 = st.checkbox("M/G/1", value=True, key="b_mg1")
+        
+        st.markdown("**Multi-serveurs:**")
+        show_mmc = st.checkbox("M/M/c", value=True, key="b_mmc")
+        show_mdc = st.checkbox("M/D/c", value=True, key="b_mdc")
+        show_mgc = st.checkbox("M/G/c", value=True, key="b_mgc")
+        
+        cv_squared = st.slider("CV² (pour M/G/*)", 0.0, 2.0, 1.0, 0.1)
+    
+    with col1:
+        lambda_rate = st.slider("λ - Taux d'arrivée", 1.0, 100.0, 30.0, key="b_lambda")
+        mu_rate_b = st.slider("μ - Taux de service", 1.0, 50.0, 10.0, key="b_mu")
+        
+        models_data = []
+        
+        # Mono-serveur
+        if show_mm1 and lambda_rate < mu_rate_b:
+            queue = GenericQueue(lambda_rate, mu_rate_b, "M/M/1")
+            m = queue.compute_theoretical_metrics()
+            models_data.append({'Modèle': 'M/M/1', 'L': m.L, 'Lq': m.Lq, 'W': m.W, 'Wq': m.Wq, 'ρ': m.rho})
+        
+        if show_md1 and lambda_rate < mu_rate_b:
+            queue = GenericQueue(lambda_rate, mu_rate_b, "M/D/1")
+            m = queue.compute_theoretical_metrics()
+            models_data.append({'Modèle': 'M/D/1', 'L': m.L, 'Lq': m.Lq, 'W': m.W, 'Wq': m.Wq, 'ρ': m.rho})
+        
+        if show_mg1 and lambda_rate < mu_rate_b:
+            queue = GenericQueue(lambda_rate, mu_rate_b, "M/G/1")
+            queue.service_variance = cv_squared * (1/mu_rate_b)**2
+            m = queue.compute_theoretical_metrics()
+            models_data.append({'Modèle': f'M/G/1 (CV²={cv_squared})', 'L': m.L, 'Lq': m.Lq, 'W': m.W, 'Wq': m.Wq, 'ρ': m.rho})
+        
+        # Multi-serveurs
+        if show_mmc and lambda_rate < n_servers * mu_rate_b:
+            queue = GenericQueue(lambda_rate, mu_rate_b, f"M/M/{n_servers}", c=n_servers)
+            m = queue.compute_theoretical_metrics()
+            models_data.append({'Modèle': f'M/M/{n_servers}', 'L': m.L, 'Lq': m.Lq, 'W': m.W, 'Wq': m.Wq, 'ρ': m.rho})
+        
+        if show_mdc and lambda_rate < n_servers * mu_rate_b:
+            queue = GenericQueue(lambda_rate, mu_rate_b, f"M/D/{n_servers}", c=n_servers)
+            m = queue.compute_theoretical_metrics()
+            models_data.append({'Modèle': f'M/D/{n_servers}', 'L': m.L, 'Lq': m.Lq, 'W': m.W, 'Wq': m.Wq, 'ρ': m.rho})
+        
+        if show_mgc and lambda_rate < n_servers * mu_rate_b:
+            queue = GenericQueue(lambda_rate, mu_rate_b, f"M/G/{n_servers}", c=n_servers)
+            queue.service_variance = cv_squared * (1/mu_rate_b)**2
+            m = queue.compute_theoretical_metrics()
+            models_data.append({'Modèle': f'M/G/{n_servers} (CV²={cv_squared})', 'L': m.L, 'Lq': m.Lq, 'W': m.W, 'Wq': m.Wq, 'ρ': m.rho})
+        
+        if models_data:
+            df = pd.DataFrame(models_data)
             
-            # Heatmap 3: Score moyen normalisé
-            st.markdown("### 3. Heatmap Score Combiné Pondéré")
-            st.caption(f"Score = {alpha:.0%} × Coût(normalisé) + {1-alpha:.0%} × Temps(normalisé). Vert = optimal.")
-            fig_avg = go.Figure(data=go.Heatmap(
-                z=Z_avg,
-                x=server_range,
-                y=mu_range,
-                colorscale='RdYlGn_r',
-                colorbar=dict(title="Score (0-1)"),
-                hoverongaps=False
-            ))
-            fig_avg.update_layout(
-                xaxis_title='Nombre de serveurs',
-                yaxis_title='Taux de service μ (par serveur/min)',
-                height=450
-            )
-            st.plotly_chart(fig_avg, use_container_width=True)
+            st.subheader("📊 Comparaison théorique")
+            st.dataframe(df.style.format({
+                'L': '{:.2f}',
+                'Lq': '{:.2f}',
+                'W': '{:.4f}',
+                'Wq': '{:.4f}',
+                'ρ': '{:.2%}'
+            }), use_container_width=True)
             
-            # Interprétation
-            st.markdown("""
-            **Lecture des heatmaps:**
-            - **Vert** = bonnes performances / faible coût
-            - **Rouge** = mauvaises performances / coût élevé
-            - **Zones blanches** = système instable (ρ ≥ 1)
-            - La frontière de stabilité est définie par: λ < c × μ
-            - Cherchez le compromis optimal (zone verte) entre ressources et performances
-            """)
+            # Graphiques
+            fig = make_subplots(rows=1, cols=2, subplot_titles=['Temps d\'attente (Wq)', 'Longueur de queue (Lq)'])
             
-            # --- Configuration optimale ---
-            st.markdown("---")
-            st.subheader("Configuration Optimale Recommandée")
+            colors = px.colors.qualitative.Set2
             
-            # Trouver le minimum du score combiné (meilleur compromis)
-            if not np.all(np.isnan(Z_avg)):
-                # Trouver l'indice du minimum
-                min_idx = np.nanargmin(Z_avg)
-                min_i, min_j = np.unravel_index(min_idx, Z_avg.shape)
+            fig.add_trace(go.Bar(x=df['Modèle'], y=df['Wq'], marker_color=colors[:len(df)]), row=1, col=1)
+            fig.add_trace(go.Bar(x=df['Modèle'], y=df['Lq'], marker_color=colors[:len(df)]), row=1, col=2)
+            
+            fig.update_layout(height=400, showlegend=False)
+            st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
+        else:
+            st.warning("Aucun modèle stable sélectionné. Vérifiez que λ < c×μ")
+    
+    st.divider()
+    
+    # Simulation comparative
+    st.subheader("🎲 Simulation Monte Carlo Comparative")
+    
+    col_s1, col_s2 = st.columns([1, 3])
+    
+    with col_s1:
+        sim_n = st.number_input("Clients", 100, 10000, 2000, key="b_sim_n")
+        sim_runs = st.number_input("Runs", 1, 20, 5, key="b_sim_runs")
+        run_benchmark = st.button("▶️ Lancer benchmark", type="primary")
+    
+    with col_s2:
+        if run_benchmark:
+            run_model_benchmark(lambda_rate, mu_rate_b, n_servers, cv_squared, sim_n, sim_runs,
+                               show_mm1, show_md1, show_mg1, show_mmc, show_mdc, show_mgc)
+
+
+def run_model_benchmark(lambda_rate, mu_rate, n_servers, cv_squared, n_customers, n_runs,
+                       show_mm1, show_md1, show_mg1, show_mmc, show_mdc, show_mgc):
+    """Exécute un benchmark Monte Carlo des modèles."""
+    
+    with st.spinner("Benchmark en cours..."):
+        results = []
+        
+        models_to_test = []
+        if show_mm1 and lambda_rate < mu_rate:
+            models_to_test.append(("M/M/1", GenericQueue(lambda_rate, mu_rate, "M/M/1")))
+        if show_md1 and lambda_rate < mu_rate:
+            models_to_test.append(("M/D/1", GenericQueue(lambda_rate, mu_rate, "M/D/1")))
+        if show_mg1 and lambda_rate < mu_rate:
+            q = GenericQueue(lambda_rate, mu_rate, "M/G/1")
+            q.service_variance = cv_squared * (1/mu_rate)**2
+            models_to_test.append(("M/G/1", q))
+        if show_mmc and lambda_rate < n_servers * mu_rate:
+            models_to_test.append((f"M/M/{n_servers}", GenericQueue(lambda_rate, mu_rate, f"M/M/{n_servers}", c=n_servers)))
+        if show_mdc and lambda_rate < n_servers * mu_rate:
+            models_to_test.append((f"M/D/{n_servers}", GenericQueue(lambda_rate, mu_rate, f"M/D/{n_servers}", c=n_servers)))
+        if show_mgc and lambda_rate < n_servers * mu_rate:
+            q = GenericQueue(lambda_rate, mu_rate, f"M/G/{n_servers}", c=n_servers)
+            q.service_variance = cv_squared * (1/mu_rate)**2
+            models_to_test.append((f"M/G/{n_servers}", q))
+        
+        progress = st.progress(0)
+        total = len(models_to_test) * n_runs
+        current = 0
+        
+        for name, queue in models_to_test:
+            for run in range(n_runs):
+                try:
+                    res = queue.simulate(n_customers=n_customers)
+                    results.append({
+                        'Modèle': name,
+                        'Run': run + 1,
+                        'Wq (sim)': np.mean(res.waiting_times) if len(res.waiting_times) > 0 else 0,
+                        'W (sim)': np.mean(res.system_times) if len(res.system_times) > 0 else 0,
+                        'Lq max': np.max(res.queue_length_trace) if len(res.queue_length_trace) > 0 else 0
+                    })
+                except Exception as e:
+                    st.warning(f"{name}: {e}")
                 
-                optimal_mu = mu_range[min_i]
-                optimal_servers = server_range[min_j]
-                optimal_cost = Z_cost[min_i, min_j]
-                optimal_wait = Z_wait[min_i, min_j]
-                optimal_score = Z_avg[min_i, min_j]
-                
-                # Calculer rho pour la config optimale
-                optimal_rho = lambda_rate / (optimal_servers * optimal_mu)
-                
-                # Décomposition des coûts pour la config optimale
-                opt_fixed_cost = optimal_servers * fixed_cost_per_server
-                opt_hourly_cost = optimal_servers * cost_per_server
-                opt_performance_cost = optimal_servers * optimal_mu * cost_per_mu
-                opt_wait_cost = optimal_wait * penalty_per_min * lambda_rate * 60
-                opt_rho_penalty = abs(optimal_rho - target_rho) * 2.0 * (opt_fixed_cost + opt_hourly_cost + opt_performance_cost)
-                
-                # Afficher les résultats
-                personas_str = ", ".join(selected_personas_names) if input_mode != "Manuel" else "Mode manuel"
-                
-                # Avertissement si trop loin de la cible
-                rho_diff = abs(optimal_rho - target_rho)
-                if rho_diff > 0.15:
-                    st.warning(f"**Meilleur compromis coût/temps d'attente pour: {personas_str}**\n\nAttention: Le taux d'utilisation ({optimal_rho:.1%}) s'écarte de la cible ({target_rho:.0%}). Ajustez les paramètres pour approcher la cible.")
-                else:
-                    st.success(f"**Meilleur compromis coût/temps d'attente pour: {personas_str}**")
-                
-                col_opt1, col_opt2, col_opt3 = st.columns(3)
-                with col_opt1:
-                    st.metric("Nombre de serveurs optimal", f"{optimal_servers}")
-                    rho_delta = optimal_rho - target_rho
-                    st.metric("Taux d'utilisation ρ", f"{optimal_rho:.1%}", 
-                             delta=f"{rho_delta:+.1%} vs cible",
-                             delta_color="inverse")
-                with col_opt2:
-                    st.metric("Taux de service μ optimal", f"{optimal_mu:.2f} /min")
-                    st.metric(f"Temps d'attente Wq", f"{optimal_wait:.2f} min",
-                             delta=f"{optimal_wait - acceptable_wait_time:+.2f} min vs acceptable",
-                             delta_color="inverse")
-                with col_opt3:
-                    st.metric("Coût total", f"{optimal_cost:.2f} €/h")
-                    st.metric("Score combiné", f"{optimal_score:.3f}")
-                
-                st.markdown(f"""
-                **Récapitulatif:**
-                - Taux d'arrivée λ = {lambda_rate:.2f} sub/min
-                - Configuration: **{optimal_servers} serveurs** avec μ = **{optimal_mu:.2f}** services/min/serveur
-                - Capacité totale: {optimal_servers * optimal_mu:.2f} services/min
-                - Marge de capacité: {(optimal_servers * optimal_mu - lambda_rate):.2f} services/min
-                """)
-                
-                # Détail des coûts
-                st.markdown("**Décomposition du coût total:**")
-                col_c1, col_c2, col_c3, col_c4, col_c5 = st.columns(5)
-                with col_c1:
-                    st.metric("Coût fixe", f"{opt_fixed_cost:.2f} €", 
-                              help=f"{optimal_servers} × {fixed_cost_per_server}€")
-                with col_c2:
-                    st.metric("Coût horaire", f"{opt_hourly_cost:.2f} €/h",
-                              help=f"{optimal_servers} × {cost_per_server}€/h")
-                with col_c3:
-                    st.metric("Coût performance", f"{opt_performance_cost:.2f} €/h",
-                              help=f"{optimal_servers} × {optimal_mu:.2f} × {cost_per_mu}€/h")
-                with col_c4:
-                    st.metric("Pénalité attente", f"{opt_wait_cost:.2f} €/h",
-                              help=f"{optimal_wait:.3f}min × {penalty_per_min}€ × {lambda_rate*60:.0f} clients/h")
-                with col_c5:
-                    st.metric("Pénalité utilisation", f"{opt_rho_penalty:.2f} €/h",
-                              help=f"Pénalité pour écart de ρ par rapport à la cible {target_rho:.0%}")
-            else:
-                st.error("Aucune configuration stable trouvée. Essayez d'augmenter le nombre de serveurs ou le taux de service.")
+                current += 1
+                progress.progress(current / total)
+        
+        progress.empty()
+        
+        if results:
+            df = pd.DataFrame(results)
+            
+            # Résumé
+            summary = df.groupby('Modèle').agg({
+                'Wq (sim)': ['mean', 'std'],
+                'W (sim)': ['mean', 'std'],
+                'Lq max': ['mean', 'std']
+            }).round(4)
+            
+            st.markdown("### Résultats")
+            
+            # Créer un DataFrame plus lisible
+            summary_display = pd.DataFrame()
+            for col in ['Wq (sim)', 'W (sim)', 'Lq max']:
+                mean = summary[col]['mean']
+                std = summary[col]['std']
+                summary_display[col] = mean.astype(str) + ' ± ' + std.astype(str)
+            
+            st.dataframe(summary_display, use_container_width=True)
+            
+            # Box plots
+            fig = make_subplots(rows=1, cols=2, subplot_titles=['Temps d\'attente', 'Temps de séjour'])
+            
+            for model in df['Modèle'].unique():
+                model_data = df[df['Modèle'] == model]
+                fig.add_trace(go.Box(y=model_data['Wq (sim)'], name=model), row=1, col=1)
+                fig.add_trace(go.Box(y=model_data['W (sim)'], name=model, showlegend=False), row=1, col=2)
+            
+            fig.update_layout(height=400)
+            st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
+
 
 if __name__ == "__main__":
     main()

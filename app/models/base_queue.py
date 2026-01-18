@@ -181,8 +181,29 @@ class GenericQueue(BaseQueueModel):
             self._external_arrivals = []
         self._external_arrivals.extend(arrival_times)
 
+    def _is_model(self, base_notation: str) -> bool:
+        """Vérifie si la notation correspond à un modèle (ex: M/M/c -> M/M/1, M/M/2, etc.)"""
+        import re
+        # Pour M/M/c, M/D/c, M/G/c - le 'c' peut être un nombre
+        if base_notation.endswith("/c"):
+            prefix = base_notation[:-1]  # "M/M/" ou "M/D/" ou "M/G/"
+            return self.kendall_notation.startswith(prefix) and self.c > 1
+        elif base_notation.endswith("/1"):
+            prefix = base_notation[:-1]  # "M/M/" ou "M/D/" ou "M/G/"
+            return self.kendall_notation.startswith(prefix) and self.c == 1
+        else:
+            return base_notation in self.kendall_notation
+    
     def compute_theoretical_metrics(self) -> QueueMetrics:
-        if "M/M/1" in self.kendall_notation:
+        # Détection du modèle basée sur la notation et le nombre de serveurs
+        is_mm1 = self._is_model("M/M/1") or (self.kendall_notation.startswith("M/M/") and self.c == 1)
+        is_md1 = self._is_model("M/D/1") or (self.kendall_notation.startswith("M/D/") and self.c == 1)
+        is_mg1 = self._is_model("M/G/1") or (self.kendall_notation.startswith("M/G/") and self.c == 1)
+        is_mmc = self.kendall_notation.startswith("M/M/") and self.c > 1
+        is_mdc = self.kendall_notation.startswith("M/D/") and self.c > 1
+        is_mgc = self.kendall_notation.startswith("M/G/") and self.c > 1
+        
+        if is_mm1:
             rho = self.rho
             if rho >= 1:
                 raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
@@ -196,7 +217,7 @@ class GenericQueue(BaseQueueModel):
                 P0=1 - rho, Pk=0.0,
                 lambda_eff=self.lambda_rate, throughput=self.lambda_rate
             )
-        elif "M/D/1" in self.kendall_notation:
+        elif is_md1:
             rho = self.rho
             if rho >= 1:
                 raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
@@ -210,7 +231,7 @@ class GenericQueue(BaseQueueModel):
                 P0=1 - rho, Pk=0.0,
                 lambda_eff=self.lambda_rate, throughput=self.lambda_rate
             )
-        elif "M/D/c" in self.kendall_notation:
+        elif is_mdc:
             rho = self.rho
             if rho >= 1:
                 raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
@@ -227,7 +248,7 @@ class GenericQueue(BaseQueueModel):
                 P0=P0, Pk=0.0,
                 lambda_eff=self.lambda_rate, throughput=self.lambda_rate
             )
-        elif "M/M/c" in self.kendall_notation:
+        elif is_mmc:
             rho = self.rho
             if rho >= 1:
                 raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
@@ -243,7 +264,7 @@ class GenericQueue(BaseQueueModel):
                 P0=P0, Pk=0.0,
                 lambda_eff=self.lambda_rate, throughput=self.lambda_rate
             )
-        elif "M/G/1" in self.kendall_notation:
+        elif is_mg1:
             rho = self.rho
             if rho >= 1:
                 raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
@@ -258,7 +279,7 @@ class GenericQueue(BaseQueueModel):
                 P0=1 - rho, Pk=0.0,
                 lambda_eff=self.lambda_rate, throughput=self.lambda_rate
             )
-        elif "M/G/c" in self.kendall_notation:
+        elif is_mgc:
             rho = self.rho
             if rho >= 1:
                 raise ValueError(f"Système instable: ρ = {rho:.4f} ≥ 1")
