@@ -30,12 +30,9 @@ import numpy as np
 
 class StudentType(Enum):
     """Types d'étudiants à EPITA."""
-    PREPA_SUP = "prepa_sup"       # 1ère année prépa
-    PREPA_SPE = "prepa_spe"       # 2ème année prépa
-    ING1 = "ing1"                  # 1ère année ingénieur
-    ING2 = "ing2"                  # 2ème année ingénieur
-    ING3 = "ing3"                  # 3ème année ingénieur
-    ADMIN = "admin"                # Administrateur système
+    PREPA = "prepa"                # Prépa SUP/SPE (900 étudiants)
+    INGENIEUR = "ingenieur"        # Ingénieurs (600 étudiants)
+    ADMIN = "admin"                # Admin/Assistants (90 utilisateurs)
 
 
 @dataclass
@@ -198,172 +195,97 @@ class PersonaFactory:
     """Factory pour créer des personas pré-configurés."""
     
     @staticmethod
-    def create_prepa_sup(population: int = 200) -> Persona:
+    def create_prepa(population: int = 900) -> Persona:
         """
-        Crée un persona Prépa SUP.
+        Crée un persona Prépa (SUP/SPE combinés).
         
         Caractéristiques:
-        - Travail régulier (encadrement fort)
-        - Peu de procrastination
-        - Soumissions fréquentes mais légères
-        - Pics en fin de journée
+        - 900 étudiants
+        - Tag groupé lors des rendus (burst sur 15 min max)
+        - Traitement plus long: 1 job/min/serveur
+        - Arrivée quasi-simultanée lors des deadlines
         """
         return Persona(
-            name="Prépa SUP",
-            student_type=StudentType.PREPA_SUP,
-            base_submission_rate=0.8,  # Moins de soumissions
-            variance_coefficient=0.3,   # Très régulier
-            peak_hours=[14, 15, 16, 17, 20, 21],
-            off_peak_factor=0.4,
-            weekend_factor=0.3,
-            night_factor=0.05,
-            rush_multiplier=2.0,  # Rush modéré
-            hours_before_deadline_rush=12.0,  # Rush court
-            procrastination_level=0.2,  # Peu procrastinateur
-            avg_test_complexity=0.7,  # Exercices plus simples
-            population_size=population
-        )
-    
-    @staticmethod
-    def create_prepa_spe(population: int = 180) -> Persona:
-        """
-        Crée un persona Prépa SPÉ.
-        
-        Caractéristiques:
-        - Plus autonome que SUP
-        - Travail toujours assez régulier
-        - Projets plus complexes
-        """
-        return Persona(
-            name="Prépa SPÉ",
-            student_type=StudentType.PREPA_SPE,
-            base_submission_rate=1.0,
-            variance_coefficient=0.4,
-            peak_hours=[14, 15, 16, 21, 22],
-            off_peak_factor=0.35,
-            weekend_factor=0.35,
-            night_factor=0.08,
-            rush_multiplier=2.5,
-            hours_before_deadline_rush=18.0,
-            procrastination_level=0.3,
-            avg_test_complexity=0.9,
-            population_size=population
-        )
-    
-    @staticmethod
-    def create_ing1(population: int = 300) -> Persona:
-        """
-        Crée un persona ING1.
-        
-        Caractéristiques:
-        - Transition prépa → ingé
-        - Plus de liberté = plus de variance
-        - Projets plus conséquents
-        - Tendance à la procrastination
-        """
-        return Persona(
-            name="ING1",
-            student_type=StudentType.ING1,
-            base_submission_rate=1.2,
-            variance_coefficient=0.6,
-            peak_hours=[15, 16, 21, 22, 23],
-            off_peak_factor=0.25,
-            weekend_factor=0.5,  # Travaille plus le weekend
-            night_factor=0.15,   # Nuits blanches
-            rush_multiplier=4.0,  # Fort rush
-            hours_before_deadline_rush=36.0,
-            procrastination_level=0.6,
-            avg_test_complexity=1.0,
-            population_size=population
-        )
-    
-    @staticmethod
-    def create_ing2(population: int = 280) -> Persona:
-        """
-        Crée un persona ING2.
-        
-        Caractéristiques:
-        - Projets majeurs (AFIT, etc.)
-        - Très haute variance
-        - Rush intense avant deadlines
-        """
-        return Persona(
-            name="ING2",
-            student_type=StudentType.ING2,
-            base_submission_rate=1.5,
-            variance_coefficient=0.7,
-            peak_hours=[16, 21, 22, 23, 0, 1],  # Noctambules
-            off_peak_factor=0.2,
-            weekend_factor=0.6,
-            night_factor=0.25,  # Beaucoup de nuits
-            rush_multiplier=5.0,  # Rush très intense
-            hours_before_deadline_rush=48.0,
-            procrastination_level=0.7,
-            avg_test_complexity=1.3,  # Projets complexes
-            population_size=population
-        )
-    
-    @staticmethod
-    def create_ing3(population: int = 250) -> Persona:
-        """
-        Crée un persona ING3.
-        
-        Caractéristiques:
-        - Projets de fin d'études
-        - Expérience = optimisation des soumissions
-        - Rush très tardif mais intense
-        """
-        return Persona(
-            name="ING3",
-            student_type=StudentType.ING3,
-            base_submission_rate=1.0,  # Moins de soumissions inutiles
-            variance_coefficient=0.8,
-            peak_hours=[20, 21, 22, 23, 0],
-            off_peak_factor=0.15,
-            weekend_factor=0.7,
-            night_factor=0.3,
-            rush_multiplier=6.0,  # Rush maximal
-            hours_before_deadline_rush=24.0,  # Rush tardif
-            procrastination_level=0.8,
-            avg_test_complexity=1.5,  # Projets très complexes
-            population_size=population
-        )
-    
-    @staticmethod
-    def create_admin() -> Persona:
-        """
-        Crée un persona Administrateur.
-        
-        Caractéristiques:
-        - Tests de maintenance
-        - Taux faible mais constant
-        - Heures de bureau
-        """
-        return Persona(
-            name="Admin",
-            student_type=StudentType.ADMIN,
-            base_submission_rate=0.1,
-            variance_coefficient=0.1,
-            peak_hours=[9, 10, 11, 14, 15, 16],
-            off_peak_factor=0.1,
-            weekend_factor=0.05,
+            name="Prépa (SUP/SPE)",
+            student_type=StudentType.PREPA,
+            base_submission_rate=0.1,  # Faible hors deadline (tag uniquement au rendu)
+            variance_coefficient=0.9,   # Très variable (burst)
+            peak_hours=[14, 15, 16, 17],  # Heures de rendu typiques
+            off_peak_factor=0.05,  # Très peu d'activité hors rendu
+            weekend_factor=0.1,
             night_factor=0.01,
+            rush_multiplier=1.0,  # Pas de rush progressif, burst direct
+            hours_before_deadline_rush=0.0,
+            procrastination_level=0.0,
+            avg_test_complexity=1.0,  # Temps de traitement: 1 min/serveur
+            population_size=population
+        )
+    
+    @staticmethod
+    def create_ingenieur(population: int = 600) -> Persona:
+        """
+        Crée un persona Ingénieur.
+        
+        Caractéristiques:
+        - 600 étudiants
+        - Tag régulier (~3 tags/heure en continu)
+        - Traitement rapide: 4 jobs/min/serveur (0.25 min/job)
+        - Flux continu toute la journée
+        
+        Calculs:
+        - λ = 3 tags/h/user × 600 users = 1800 tags/h = 30 tags/min
+        - μ = 4 jobs/min/serveur
+        - Avec 20 serveurs: capacité = 80 jobs/min (> 30, donc stable)
+        """
+        return Persona(
+            name="Ingénieur",
+            student_type=StudentType.INGENIEUR,
+            base_submission_rate=2.0,  # 3 tags/heure par étudiant
+            variance_coefficient=0.3,   # Assez régulier
+            peak_hours=[9, 10, 11, 14, 15, 16, 17, 20, 21, 22],  # Journée étendue
+            off_peak_factor=0.5,  # Activité continue
+            weekend_factor=0.4,
+            night_factor=0.15,
+            rush_multiplier=1.0,  # Pas de rush, flux continu
+            hours_before_deadline_rush=0.0,
+            procrastination_level=0.0,
+            avg_test_complexity=0.25,  # Temps de traitement: 4 jobs/min = 0.25 min/job
+            population_size=population
+        )
+    
+    @staticmethod
+    def create_admin(population: int = 90) -> Persona:
+        """
+        Crée un persona Admin/Assistants.
+        
+        Caractéristiques:
+        - 90 utilisateurs
+        - Tag ponctuel (~4/heure pour l'ensemble)
+        - Traitement: 1 job/min/serveur
+        - Usage très sporadique
+        """
+        return Persona(
+            name="Admin/Assistants",
+            student_type=StudentType.ADMIN,
+            base_submission_rate=0.044,  # ~4 tags/h pour 90 users = 0.044/user/h
+            variance_coefficient=0.2,
+            peak_hours=[9, 10, 11, 14, 15, 16],  # Heures de bureau
+            off_peak_factor=0.1,
+            weekend_factor=0.02,
+            night_factor=0.0,
             rush_multiplier=1.0,  # Pas de rush
             hours_before_deadline_rush=0.0,
             procrastination_level=0.0,
-            avg_test_complexity=0.5,
-            population_size=5
+            avg_test_complexity=1.0,  # Temps de traitement: 1 min/serveur
+            population_size=population
         )
     
     @staticmethod
     def create_all_personas() -> Dict[StudentType, Persona]:
         """Crée tous les personas avec populations par défaut."""
         return {
-            StudentType.PREPA_SUP: PersonaFactory.create_prepa_sup(),
-            StudentType.PREPA_SPE: PersonaFactory.create_prepa_spe(),
-            StudentType.ING1: PersonaFactory.create_ing1(),
-            StudentType.ING2: PersonaFactory.create_ing2(),
-            StudentType.ING3: PersonaFactory.create_ing3(),
+            StudentType.PREPA: PersonaFactory.create_prepa(),
+            StudentType.INGENIEUR: PersonaFactory.create_ingenieur(),
             StudentType.ADMIN: PersonaFactory.create_admin(),
         }
     
