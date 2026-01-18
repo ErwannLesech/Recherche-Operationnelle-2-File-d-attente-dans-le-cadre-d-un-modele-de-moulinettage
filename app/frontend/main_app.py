@@ -934,7 +934,7 @@ def simulate_waterfall_with_backup(
 
 def render_backup_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1: int, K2: int):
     """Scénario 2: Impact du backup sur les pages blanches."""
-    st.header("💾 Scénario 2: Mécanismes de Backup")
+    st.header("💾 Mécanismes de Backup")
     
     st.markdown("""
     <div class="scenario-box">
@@ -1248,7 +1248,7 @@ def render_backup_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1:
 
 def render_channels_dams_tab(mu_rate1: float, n_servers: int, K1: int):
     """Onglet Channels & Dams pour populations différenciées."""
-    st.header("👥 Channels & Dams: Populations Différenciées")
+    st.header("👥 Scénario 2: Channels & Dams")
     
     # Créer les personas
     personas = PersonaFactory.create_all_personas()
