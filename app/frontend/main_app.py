@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple, Optional
 import math
+import heapq
 
 # Ajouter le chemin parent pour les imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -648,6 +649,259 @@ def run_waterfall_simulation(lambda_rate, mu_rate1, mu_rate2, n_servers, K1, K2,
 # SCÉNARIO 2: MÉCANISMES DE BACKUP
 # ==============================================================================
 
+def simulate_waterfall_with_backup(
+    lambda_rate: float,
+    mu_rate1: float,
+    mu_rate2: float,
+    mu_backup: float,
+    n_servers: int,
+    K1: int,
+    K2: int,
+    n_customers: int,
+    p_backup: float = 1.0,
+    seed: Optional[int] = None
+) -> dict:
+    """
+    Simule le système Waterfall avec mécanisme de backup entre les deux files.
+    
+    Architecture:
+    File 1 (M/M/c/K1) → [BACKUP] → File 2 (M/M/1/K2) → Frontend
+    
+    Le backup sauvegarde les résultats AVANT l'envoi vers la file 2.
+    Si la file 2 rejette (pleine), les données sont récupérées depuis le backup.
+    
+    Args:
+        lambda_rate: Taux d'arrivée des tags
+        mu_rate1: Taux de service de la file 1 (moulinette)
+        mu_rate2: Taux de service de la file 2 (envoi résultats)
+        mu_backup: Taux de sauvegarde (backup/min)
+        n_servers: Nombre de serveurs dans la file 1
+        K1: Capacité de la file 1
+        K2: Capacité de la file 2
+        n_customers: Nombre de clients à simuler
+        p_backup: Probabilité de faire un backup (0 à 1)
+        seed: Graine aléatoire
+    
+    Returns:
+        dict avec les métriques de simulation
+    """
+    rng = np.random.default_rng(seed)
+    
+    # Génération des arrivées
+    interarrival_times = rng.exponential(1/lambda_rate, n_customers)
+    arrival_times = np.cumsum(interarrival_times)
+    
+    # Structures pour File 1
+    queue1 = []
+    busy_servers1 = 0
+    event_heap = []
+    
+    # Structures pour File 2
+    queue2 = []
+    busy_server2 = False
+    
+    # Backup storage
+    backup_storage = {}  # client_id -> (result_data, backup_time)
+    
+    # Compteurs
+    n_rejected_f1 = 0
+    n_rejected_f2 = 0
+    n_recovered_from_backup = 0
+    n_backed_up = 0
+    
+    # Métriques temporelles
+    file1_wait_times = []
+    file1_system_times = []
+    file2_wait_times = []
+    file2_system_times = []
+    backup_times = []
+    total_system_times = []
+    
+    # Service times (pré-générés)
+    service_times_f1 = rng.exponential(1/mu_rate1, n_customers)
+    service_times_f2 = rng.exponential(1/mu_rate2, n_customers)
+    backup_service_times = rng.exponential(1/mu_backup, n_customers)
+    
+    # Décisions de backup (pré-générées)
+    do_backup = rng.random(n_customers) < p_backup
+    
+    # Initialiser les arrivées
+    for i, t in enumerate(arrival_times):
+        heapq.heappush(event_heap, (t, "arrival_f1", i))
+    
+    # Compteur système
+    system_size_f1 = 0
+    system_size_f2 = 0
+    
+    # Traces temporelles
+    time_trace = []
+    f1_size_trace = []
+    f2_size_trace = []
+    backup_size_trace = []
+    
+    # Temps d'entrée dans le système pour chaque client
+    client_arrival_f1 = {}
+    client_exit_f1 = {}
+    client_arrival_f2 = {}
+    client_completed = set()
+    
+    while event_heap:
+        time, event_type, client_id = heapq.heappop(event_heap)
+        
+        if event_type == "arrival_f1":
+            # Arrivée dans File 1
+            if system_size_f1 >= K1:
+                n_rejected_f1 += 1
+                continue
+            
+            system_size_f1 += 1
+            client_arrival_f1[client_id] = time
+            
+            if busy_servers1 < n_servers:
+                # Service immédiat
+                busy_servers1 += 1
+                depart_time = time + service_times_f1[client_id]
+                heapq.heappush(event_heap, (depart_time, "depart_f1", client_id))
+                file1_wait_times.append(0.0)
+            else:
+                queue1.append(client_id)
+        
+        elif event_type == "depart_f1":
+            # Départ de File 1 → Backup → File 2
+            system_size_f1 -= 1
+            busy_servers1 -= 1
+            
+            client_exit_f1[client_id] = time
+            file1_system_times.append(time - client_arrival_f1[client_id])
+            
+            # Faire le backup AVANT d'envoyer à la file 2
+            if do_backup[client_id]:
+                backup_time = backup_service_times[client_id]
+                backup_storage[client_id] = {
+                    'backup_time': time,
+                    'data_ready': time + backup_time
+                }
+                backup_times.append(backup_time)
+                n_backed_up += 1
+                # Le backup est asynchrone, on continue vers File 2 immédiatement
+                # mais les données sont sauvegardées
+            
+            # Essayer d'entrer dans File 2
+            heapq.heappush(event_heap, (time, "try_enter_f2", client_id))
+            
+            # Servir le prochain dans File 1
+            if queue1:
+                next_client = queue1.pop(0)
+                busy_servers1 += 1
+                wait_time = time - client_arrival_f1[next_client]
+                file1_wait_times.append(wait_time)
+                depart_time = time + service_times_f1[next_client]
+                heapq.heappush(event_heap, (depart_time, "depart_f1", next_client))
+        
+        elif event_type == "try_enter_f2":
+            # Tentative d'entrée dans File 2
+            if system_size_f2 >= K2:
+                # File 2 pleine !
+                n_rejected_f2 += 1
+                
+                # Récupération depuis le backup si disponible
+                if client_id in backup_storage:
+                    n_recovered_from_backup += 1
+                    # On planifie une ré-tentative après un délai
+                    retry_time = time + rng.exponential(1/mu_rate2)  # Attendre avant retry
+                    heapq.heappush(event_heap, (retry_time, "retry_from_backup", client_id))
+                # Sinon: page blanche (données perdues)
+                continue
+            
+            system_size_f2 += 1
+            client_arrival_f2[client_id] = time
+            
+            if not busy_server2:
+                # Service immédiat
+                busy_server2 = True
+                depart_time = time + service_times_f2[client_id]
+                heapq.heappush(event_heap, (depart_time, "depart_f2", client_id))
+                file2_wait_times.append(0.0)
+            else:
+                queue2.append(client_id)
+        
+        elif event_type == "retry_from_backup":
+            # Ré-tentative depuis le backup
+            if system_size_f2 >= K2:
+                # Toujours pleine, on re-planifie
+                retry_time = time + rng.exponential(1/mu_rate2)
+                heapq.heappush(event_heap, (retry_time, "retry_from_backup", client_id))
+                continue
+            
+            system_size_f2 += 1
+            client_arrival_f2[client_id] = time
+            
+            if not busy_server2:
+                busy_server2 = True
+                depart_time = time + service_times_f2[client_id]
+                heapq.heappush(event_heap, (depart_time, "depart_f2", client_id))
+                file2_wait_times.append(0.0)
+            else:
+                queue2.append(client_id)
+        
+        elif event_type == "depart_f2":
+            # Départ de File 2 → Client complété
+            system_size_f2 -= 1
+            busy_server2 = False
+            
+            if client_id in client_arrival_f2:
+                file2_system_times.append(time - client_arrival_f2[client_id])
+            
+            if client_id in client_arrival_f1:
+                total_system_times.append(time - client_arrival_f1[client_id])
+            
+            client_completed.add(client_id)
+            
+            # Nettoyer le backup
+            if client_id in backup_storage:
+                del backup_storage[client_id]
+            
+            # Servir le prochain dans File 2
+            if queue2:
+                next_client = queue2.pop(0)
+                busy_server2 = True
+                wait_time = time - client_arrival_f2[next_client]
+                file2_wait_times.append(wait_time)
+                depart_time = time + service_times_f2[next_client]
+                heapq.heappush(event_heap, (depart_time, "depart_f2", next_client))
+        
+        # Mise à jour des traces
+        time_trace.append(time)
+        f1_size_trace.append(system_size_f1)
+        f2_size_trace.append(system_size_f2)
+        backup_size_trace.append(len(backup_storage))
+    
+    # Calcul des métriques finales
+    n_completed = len(client_completed)
+    n_lost = n_rejected_f2 - n_recovered_from_backup  # Vraies pages blanches
+    
+    return {
+        'n_arrivals': n_customers,
+        'n_rejected_f1': n_rejected_f1,
+        'n_rejected_f2': n_rejected_f2,
+        'n_backed_up': n_backed_up,
+        'n_recovered_from_backup': n_recovered_from_backup,
+        'n_completed': n_completed,
+        'n_lost': max(0, n_lost),
+        'p_blank': max(0, n_lost) / n_customers if n_customers > 0 else 0,
+        'file1_wait_mean': np.mean(file1_wait_times) if file1_wait_times else 0,
+        'file1_system_mean': np.mean(file1_system_times) if file1_system_times else 0,
+        'file2_wait_mean': np.mean(file2_wait_times) if file2_wait_times else 0,
+        'file2_system_mean': np.mean(file2_system_times) if file2_system_times else 0,
+        'backup_time_mean': np.mean(backup_times) if backup_times else 0,
+        'total_system_mean': np.mean(total_system_times) if total_system_times else 0,
+        'time_trace': np.array(time_trace),
+        'f1_size_trace': np.array(f1_size_trace),
+        'f2_size_trace': np.array(f2_size_trace),
+        'backup_size_trace': np.array(backup_size_trace),
+    }
+
+
 def render_backup_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1: int, K2: int):
     """Scénario 2: Impact du backup sur les pages blanches."""
     st.header("💾 Scénario 2: Mécanismes de Backup")
@@ -655,9 +909,66 @@ def render_backup_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1:
     st.markdown("""
     <div class="scenario-box">
     <strong>Problématique:</strong> Quand la file 2 est saturée, les résultats sont perdus → <em>pages blanches</em><br><br>
-    <strong>Solution:</strong> Sauvegarder les résultats avant insertion dans la file 2
+    <strong>Solution:</strong> Sauvegarder les résultats de moulinettage <em>avant</em> l'envoi vers la file 2.<br>
+    Si la file 2 rejette, les données peuvent être récupérées depuis le backup.
     </div>
     """, unsafe_allow_html=True)
+    
+    # Schéma du système avec backup
+    st.subheader("🏗️ Architecture avec Backup")
+    
+    fig_arch = go.Figure()
+    y_base = 0.5
+    
+    # File 1
+    fig_arch.add_trace(go.Scatter(x=[0], y=[y_base], mode='markers+text',
+        marker=dict(size=40, color='#2ecc71'), text=['👨‍🎓'], textposition='middle center', showlegend=False))
+    fig_arch.add_annotation(x=0, y=y_base-0.2, text="Étudiants", showarrow=False)
+    
+    fig_arch.add_annotation(x=0.4, y=y_base, ax=0.1, ay=y_base, xref="x", yref="y", axref="x", ayref="y",
+                           showarrow=True, arrowhead=2)
+    
+    fig_arch.add_trace(go.Scatter(x=[0.8], y=[y_base], mode='markers+text',
+        marker=dict(size=50, color='#3498db', symbol='square'), text=['🖥️'], textposition='middle center', showlegend=False))
+    fig_arch.add_annotation(x=0.8, y=y_base-0.2, text=f"File 1\n(M/M/{n_servers}/K₁)", showarrow=False)
+    
+    # Backup (point de sauvegarde)
+    fig_arch.add_annotation(x=1.3, y=y_base, ax=1.0, ay=y_base, xref="x", yref="y", axref="x", ayref="y",
+                           showarrow=True, arrowhead=2)
+    
+    fig_arch.add_trace(go.Scatter(x=[1.6], y=[y_base], mode='markers+text',
+        marker=dict(size=50, color='#f39c12', symbol='diamond'), text=['💾'], textposition='middle center', showlegend=False))
+    fig_arch.add_annotation(x=1.6, y=y_base-0.2, text="BACKUP\n(sauvegarde)", showarrow=False, font=dict(color='#f39c12'))
+    
+    # Flèche vers File 2
+    fig_arch.add_annotation(x=2.1, y=y_base, ax=1.8, ay=y_base, xref="x", yref="y", axref="x", ayref="y",
+                           showarrow=True, arrowhead=2)
+    
+    # File 2
+    fig_arch.add_trace(go.Scatter(x=[2.4], y=[y_base], mode='markers+text',
+        marker=dict(size=50, color='#9b59b6', symbol='square'), text=['📤'], textposition='middle center', showlegend=False))
+    fig_arch.add_annotation(x=2.4, y=y_base-0.2, text=f"File 2\n(M/M/1/K₂)", showarrow=False)
+    
+    # Flèche de récupération (backup -> retry)
+    fig_arch.add_trace(go.Scatter(x=[1.6, 2.0, 2.4], y=[y_base+0.25, y_base+0.35, y_base+0.25], 
+        mode='lines', line=dict(color='#e74c3c', dash='dash', width=2), showlegend=False))
+    fig_arch.add_annotation(x=2.0, y=y_base+0.4, text="Récupération si rejet", showarrow=False, font=dict(color='#e74c3c', size=10))
+    
+    # Frontend
+    fig_arch.add_annotation(x=2.9, y=y_base, ax=2.6, ay=y_base, xref="x", yref="y", axref="x", ayref="y",
+                           showarrow=True, arrowhead=2)
+    
+    fig_arch.add_trace(go.Scatter(x=[3.2], y=[y_base], mode='markers+text',
+        marker=dict(size=40, color='#27ae60'), text=['✅'], textposition='middle center', showlegend=False))
+    fig_arch.add_annotation(x=3.2, y=y_base-0.2, text="Résultat\naffiché", showarrow=False)
+    
+    fig_arch.update_layout(
+        height=250,
+        xaxis=dict(showgrid=False, showticklabels=False, range=[-0.3, 3.5]),
+        yaxis=dict(showgrid=False, showticklabels=False, range=[0, 1]),
+        margin=dict(l=20, r=20, t=30, b=20),
+    )
+    st.plotly_chart(apply_dark_theme(fig_arch), use_container_width=True)
     
     col1, col2 = st.columns([1, 1])
     
@@ -701,18 +1012,37 @@ def render_backup_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1:
         backup_mode = st.radio(
             "Type de backup",
             ["Systématique (p=100%)", "Aléatoire (p variable)"],
-            key="backup_mode"
+            key="backup_mode",
+            help="Le backup aléatoire sauvegarde chaque résultat avec une probabilité P"
         )
         
         if backup_mode == "Aléatoire (p variable)":
-            p_backup = st.slider("Probabilité de backup (p)", 0.0, 1.0, 0.5, 0.05, key="backup_p")
+            p_backup = st.slider(
+                "Probabilité de backup (P)", 
+                0.0, 1.0, 0.5, 0.05, 
+                key="backup_p",
+                help="Chaque résultat de moulinettage a une probabilité P d'être sauvegardé"
+            )
+            st.markdown(f"""
+            <div style="background: #2b3e50; padding: 0.5rem; border-radius: 5px; font-size: 0.9em;">
+            🎲 <strong>Backup aléatoire:</strong> Chaque résultat a {p_backup:.0%} de chances d'être sauvegardé.<br>
+            Si rejet et pas de backup → <span style="color: #e74c3c;">page blanche</span>
+            </div>
+            """, unsafe_allow_html=True)
         else:
             p_backup = 1.0
+            st.markdown("""
+            <div style="background: #1e4d2b; padding: 0.5rem; border-radius: 5px; font-size: 0.9em;">
+            ✅ <strong>Backup systématique:</strong> Tous les résultats sont sauvegardés (P=100%)
+            </div>
+            """, unsafe_allow_html=True)
         
         # Impact du backup sur le temps
         mu_backup = st.slider("μ_backup (sauvegardes/min)", 10.0, 100.0, 50.0, key="backup_mu")
         
         # Nouveau calcul avec backup
+        # P_blank_with_backup = P(pas de backup) × P(rejet file 2)
+        # = (1 - p_backup) × P_K2 × (1 - P_K1)
         P_blank_with_backup = (1 - P_K1) * P_K2 * (1 - p_backup)
         
         st.metric("Probabilité de backup", f"{p_backup:.0%}")
@@ -723,56 +1053,211 @@ def render_backup_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1:
         
         # Temps de backup additionnel
         T_backup = 1 / mu_backup
-        st.metric("⏱️ Temps de backup ajouté", f"{T_backup:.3f} min")
+        T_backup_moyen = p_backup * T_backup  # Temps moyen ajouté (pondéré par P)
+        st.metric("⏱️ Temps de backup moyen ajouté", f"{T_backup_moyen:.3f} min")
+        
+        # Formule explicative pour le backup aléatoire
+        if backup_mode == "Aléatoire (p variable)":
+            st.markdown(f"""
+            <div class="formula-box">
+            <strong>Formule (backup aléatoire):</strong><br>
+            P_blank = (1 - P_K₁) × P_K₂ × (1 - P)<br>
+            = {(1-P_K1):.4f} × {P_K2:.4f} × {(1-p_backup):.2f}<br>
+            = <strong>{P_blank_with_backup:.6f}</strong><br><br>
+            <em>T_backup_moyen = P × (1/μ_backup) = {p_backup:.2f} × {T_backup:.3f} = {T_backup_moyen:.4f} min</em>
+            </div>
+            """, unsafe_allow_html=True)
     
     st.divider()
     
-    # Visualisation
-    st.subheader("📈 Impact du backup selon la charge")
+    # Section Simulation Monte Carlo avec Backup
+    st.subheader("🎲 Simulation Monte Carlo avec Backup")
     
-    lambda_range = np.linspace(10, 100, 50)
-    p_blank_no = []
-    p_blank_50 = []
-    p_blank_100 = []
+    col_sim1, col_sim2 = st.columns([1, 2])
     
-    for lam in lambda_range:
-        rho2 = lam / mu_rate2
-        if rho2 < 1:
-            P0 = (1 - rho2) / (1 - rho2 ** (K2 + 1))
-            pk2 = P0 * (rho2 ** K2)
-        else:
-            pk2 = 1 / (K2 + 1)
-        
-        rho1 = lam / (n_servers * mu_rate1)
-        pk1 = max(0, min(0.1, (rho1 - 0.8) / 0.2)) if rho1 > 0.8 else 0
-        
-        p_blank_no.append((1 - pk1) * pk2 * 100)
-        p_blank_50.append((1 - pk1) * pk2 * 0.5 * 100)
-        p_blank_100.append(0)
+    with col_sim1:
+        n_customers = st.number_input("Nombre de clients", 100, 10000, 2000, step=100, key="backup_sim_n")
+        n_runs = st.number_input("Nombre de répétitions", 1, 20, 5, key="backup_sim_runs")
+        run_backup_sim = st.button("▶️ Lancer simulation avec Backup", type="primary", key="backup_sim_run")
     
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=lambda_range, y=p_blank_no, name='Sans backup', line=dict(color='red')))
-    fig.add_trace(go.Scatter(x=lambda_range, y=p_blank_50, name='Backup 50%', line=dict(color='orange')))
-    fig.add_trace(go.Scatter(x=lambda_range, y=p_blank_100, name='Backup 100%', line=dict(color='green')))
+    with col_sim2:
+        if run_backup_sim:
+            with st.spinner("Simulation en cours..."):
+                results_no_backup = []
+                results_with_backup = []
+                
+                for run in range(n_runs):
+                    # Sans backup (p=0)
+                    res_no = simulate_waterfall_with_backup(
+                        lambda_rate, mu_rate1, mu_rate2, mu_backup,
+                        n_servers, K1, K2, n_customers, p_backup=0.0, seed=run
+                    )
+                    results_no_backup.append(res_no)
+                    
+                    # Avec backup
+                    res_with = simulate_waterfall_with_backup(
+                        lambda_rate, mu_rate1, mu_rate2, mu_backup,
+                        n_servers, K1, K2, n_customers, p_backup=p_backup, seed=run
+                    )
+                    results_with_backup.append(res_with)
+                
+                # Affichage des résultats
+                st.markdown("### 📊 Résultats de simulation")
+                
+                col_r1, col_r2 = st.columns(2)
+                
+                with col_r1:
+                    st.markdown("**Sans backup:**")
+                    avg_blank_no = np.mean([r['p_blank'] for r in results_no_backup])
+                    avg_lost_no = np.mean([r['n_lost'] for r in results_no_backup])
+                    avg_time_no = np.mean([r['total_system_mean'] for r in results_no_backup])
+                    
+                    st.metric("Taux pages blanches", f"{avg_blank_no:.4%}")
+                    st.metric("Clients perdus (moy.)", f"{avg_lost_no:.1f}")
+                    st.metric("Temps moyen système", f"{avg_time_no:.3f} min")
+                
+                with col_r2:
+                    st.markdown("**Avec backup:**")
+                    avg_blank_with = np.mean([r['p_blank'] for r in results_with_backup])
+                    avg_lost_with = np.mean([r['n_lost'] for r in results_with_backup])
+                    avg_recovered = np.mean([r['n_recovered_from_backup'] for r in results_with_backup])
+                    avg_time_with = np.mean([r['total_system_mean'] for r in results_with_backup])
+                    
+                    st.metric("Taux pages blanches", f"{avg_blank_with:.4%}")
+                    st.metric("Clients perdus (moy.)", f"{avg_lost_with:.1f}")
+                    st.metric("Récupérés du backup", f"{avg_recovered:.1f}")
+                    st.metric("Temps moyen système", f"{avg_time_with:.3f} min")
+                
+                # Comparaison graphique
+                fig_comp = make_subplots(rows=1, cols=2, 
+                    subplot_titles=['Taux de pages blanches', 'Temps moyen dans le système'])
+                
+                blanks_no = [r['p_blank'] * 100 for r in results_no_backup]
+                blanks_with = [r['p_blank'] * 100 for r in results_with_backup]
+                
+                fig_comp.add_trace(go.Box(y=blanks_no, name='Sans backup (P=0)', marker_color='red'), row=1, col=1)
+                fig_comp.add_trace(go.Box(y=blanks_with, name=f'Avec backup (P={p_backup:.0%})', marker_color='green'), row=1, col=1)
+                
+                times_no = [r['total_system_mean'] for r in results_no_backup]
+                times_with = [r['total_system_mean'] for r in results_with_backup]
+                
+                fig_comp.add_trace(go.Box(y=times_no, name='Sans backup', marker_color='red', showlegend=False), row=1, col=2)
+                fig_comp.add_trace(go.Box(y=times_with, name='Avec backup', marker_color='green', showlegend=False), row=1, col=2)
+                
+                fig_comp.update_yaxes(title_text="Pages blanches (%)", row=1, col=1)
+                fig_comp.update_yaxes(title_text="Temps (min)", row=1, col=2)
+                fig_comp.update_layout(height=400, showlegend=True)
+                
+                st.plotly_chart(apply_dark_theme(fig_comp), use_container_width=True)
+                
+                # Analyse de sensibilité: Impact de différentes valeurs de P
+                st.markdown("### 🎯 Analyse de sensibilité: Impact de P")
+                
+                p_values = [0.0, 0.25, 0.5, 0.75, 1.0]
+                sensitivity_results = []
+                
+                for p_val in p_values:
+                    res = simulate_waterfall_with_backup(
+                        lambda_rate, mu_rate1, mu_rate2, mu_backup,
+                        n_servers, K1, K2, n_customers, p_backup=p_val, seed=42
+                    )
+                    sensitivity_results.append({
+                        'P': p_val,
+                        'Pages blanches (%)': res['p_blank'] * 100,
+                        'Clients perdus': res['n_lost'],
+                        'Récupérés': res['n_recovered_from_backup'],
+                        'Sauvegardés': res['n_backed_up'],
+                        'Temps moyen (min)': res['total_system_mean']
+                    })
+                
+                df_sensitivity = pd.DataFrame(sensitivity_results)
+                st.dataframe(df_sensitivity, use_container_width=True)
+                
+                # Graphique de sensibilité
+                fig_sens = make_subplots(rows=1, cols=2,
+                    subplot_titles=['Pages blanches vs P', 'Clients sauvegardés vs P'])
+                
+                fig_sens.add_trace(go.Scatter(
+                    x=df_sensitivity['P'], 
+                    y=df_sensitivity['Pages blanches (%)'],
+                    mode='lines+markers',
+                    name='Pages blanches',
+                    line=dict(color='#e74c3c', width=3),
+                    marker=dict(size=10)
+                ), row=1, col=1)
+                
+                fig_sens.add_trace(go.Scatter(
+                    x=df_sensitivity['P'], 
+                    y=df_sensitivity['Sauvegardés'],
+                    mode='lines+markers',
+                    name='Sauvegardés',
+                    line=dict(color='#f39c12', width=3),
+                    marker=dict(size=10)
+                ), row=1, col=2)
+                
+                fig_sens.add_trace(go.Scatter(
+                    x=df_sensitivity['P'], 
+                    y=df_sensitivity['Récupérés'],
+                    mode='lines+markers',
+                    name='Récupérés du backup',
+                    line=dict(color='#27ae60', width=3),
+                    marker=dict(size=10)
+                ), row=1, col=2)
+                
+                fig_sens.update_xaxes(title_text="Probabilité P", row=1, col=1)
+                fig_sens.update_xaxes(title_text="Probabilité P", row=1, col=2)
+                fig_sens.update_yaxes(title_text="Pages blanches (%)", row=1, col=1)
+                fig_sens.update_yaxes(title_text="Nombre de clients", row=1, col=2)
+                fig_sens.update_layout(height=350)
+                
+                st.plotly_chart(apply_dark_theme(fig_sens), use_container_width=True)
+                
+                # Trace temporelle de la dernière simulation
+                if len(results_with_backup) > 0:
+                    last_res = results_with_backup[-1]
+                    if len(last_res['time_trace']) > 0:
+                        st.markdown("### 📈 Évolution temporelle (dernière simulation)")
+                        
+                        # Sous-échantillonnage si trop de points
+                        max_points = 1000
+                        step = max(1, len(last_res['time_trace']) // max_points)
+                        
+                        fig_trace = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                            subplot_titles=['Taille des files', 'Données en backup'])
+                        
+                        fig_trace.add_trace(go.Scatter(
+                            x=last_res['time_trace'][::step], 
+                            y=last_res['f1_size_trace'][::step],
+                            name='File 1', line=dict(color='#3498db')
+                        ), row=1, col=1)
+                        
+                        fig_trace.add_trace(go.Scatter(
+                            x=last_res['time_trace'][::step], 
+                            y=last_res['f2_size_trace'][::step],
+                            name='File 2', line=dict(color='#9b59b6')
+                        ), row=1, col=1)
+                        
+                        fig_trace.add_trace(go.Scatter(
+                            x=last_res['time_trace'][::step], 
+                            y=last_res['backup_size_trace'][::step],
+                            name='Backup', line=dict(color='#f39c12'), fill='tozeroy'
+                        ), row=2, col=1)
+                        
+                        fig_trace.update_xaxes(title_text="Temps (min)", row=2, col=1)
+                        fig_trace.update_yaxes(title_text="Nb clients", row=1, col=1)
+                        fig_trace.update_yaxes(title_text="Nb en backup", row=2, col=1)
+                        fig_trace.update_layout(height=400)
+                        
+                        st.plotly_chart(apply_dark_theme(fig_trace), use_container_width=True)
     
-    fig.update_layout(
-        xaxis_title="Taux d'arrivée λ (tags/min)",
-        yaxis_title="Probabilité page blanche (%)",
-        height=400,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02)
-    )
-    st.plotly_chart(apply_dark_theme(fig), use_container_width=True)
+    st.divider()
     
-    # Trade-off
-    st.subheader("⚖️ Compromis Backup")
-    
-    st.markdown("""
-    | Aspect | Sans backup | Backup systématique | Backup aléatoire |
-    |--------|-------------|---------------------|------------------|
-    | Pages blanches | Possible | **0%** | Réduit |
-    | Latence | Minimale | +T_backup | +p×T_backup |
-    | Stockage | Aucun | Maximum | Réduit |
-    | Complexité | Simple | Moyenne | Moyenne |
+    st.info("""
+    💡 **Mécanisme de backup implémenté:**
+    1. Les résultats de moulinettage sont sauvegardés **avant** l'envoi vers la file 2
+    2. Si la file 2 rejette (pleine), les données sont **récupérées depuis le backup**
+    3. Une nouvelle tentative d'envoi est planifiée jusqu'au succès
+    4. Cela élimine (presque) totalement les pages blanches
     """)
 
 
