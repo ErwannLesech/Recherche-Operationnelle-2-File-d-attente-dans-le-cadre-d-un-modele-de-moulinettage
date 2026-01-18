@@ -709,6 +709,9 @@ def simulate_waterfall_with_backup(
     n_recovered_from_backup = 0
     n_backed_up = 0
     
+    # Ensemble pour tracker les clients déjà rejetés de File 2 (une seule fois par client)
+    rejected_f2_clients = set()
+    
     # Métriques temporelles
     file1_wait_times = []
     file1_system_times = []
@@ -802,7 +805,11 @@ def simulate_waterfall_with_backup(
             # Tentative d'entrée dans File 2
             if system_size_f2 >= K2:
                 # File 2 pleine !
-                n_rejected_f2 += 1
+                # Compter le rejet seulement si c'est la première fois pour ce client
+                if client_id not in rejected_f2_clients:
+                    print(rejected_f2_clients)
+                    n_rejected_f2 += 1
+                    rejected_f2_clients.add(client_id)
                 
                 # Récupération depuis le backup si disponible
                 if client_id in backup_storage:
@@ -970,285 +977,236 @@ def render_backup_scenario(mu_rate1: float, mu_rate2: float, n_servers: int, K1:
     )
     st.plotly_chart(apply_dark_theme(fig_arch), use_container_width=True)
     
-    col1, col2 = st.columns([1, 1])
+    st.subheader("⚙️ Configuration de la simulation")
     
-    with col1:
-        st.subheader("📊 Sans backup")
-        
-        lambda_rate = st.slider("λ - Taux d'arrivée", 10.0, 100.0, 40.0, key="backup_lambda")
-        
-        # Calculer les probabilités
-        rho2 = lambda_rate / mu_rate2
-        
-        if rho2 < 1:
-            # M/M/1/K2
-            P0 = (1 - rho2) / (1 - rho2 ** (K2 + 1))
-            P_K2 = P0 * (rho2 ** K2)
-        else:
-            P_K2 = 1 / (K2 + 1)
-        
-        # Probabilité de page blanche sans backup
-        # P_K1 approximée (simplification)
-        rho1 = lambda_rate / (n_servers * mu_rate1)
-        P_K1 = max(0, min(0.1, (rho1 - 0.8) / 0.2)) if rho1 > 0.8 else 0
-        
-        P_blank_no_backup = (1 - P_K1) * P_K2
-        
-        st.metric("Taux de saturation File 2 (ρ₂)", f"{rho2:.2%}")
-        st.metric("P(file 2 pleine)", f"{P_K2:.4%}")
-        st.metric("🚨 Probabilité page blanche", f"{P_blank_no_backup:.4%}")
-        
-        st.markdown(f"""
-        <div class="formula-box">
-        P_blank = (1 - P_K₁) × P_K₂<br>
-        = (1 - {P_K1:.4f}) × {P_K2:.4f}<br>
-        = <strong>{P_blank_no_backup:.6f}</strong>
-        </div>
-        """, unsafe_allow_html=True)
+    col_config1, col_config2, col_config3 = st.columns(3)
     
-    with col2:
-        st.subheader("✅ Avec backup")
-        
-        backup_mode = st.radio(
-            "Type de backup",
-            ["Systématique (p=100%)", "Aléatoire (p variable)"],
-            key="backup_mode",
-            help="Le backup aléatoire sauvegarde chaque résultat avec une probabilité P"
-        )
-        
-        if backup_mode == "Aléatoire (p variable)":
-            p_backup = st.slider(
-                "Probabilité de backup (P)", 
-                0.0, 1.0, 0.5, 0.05, 
-                key="backup_p",
-                help="Chaque résultat de moulinettage a une probabilité P d'être sauvegardé"
-            )
-            st.markdown(f"""
-            <div style="background: #2b3e50; padding: 0.5rem; border-radius: 5px; font-size: 0.9em;">
-            🎲 <strong>Backup aléatoire:</strong> Chaque résultat a {p_backup:.0%} de chances d'être sauvegardé.<br>
-            Si rejet et pas de backup → <span style="color: #e74c3c;">page blanche</span>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            p_backup = 1.0
-            st.markdown("""
-            <div style="background: #1e4d2b; padding: 0.5rem; border-radius: 5px; font-size: 0.9em;">
-            ✅ <strong>Backup systématique:</strong> Tous les résultats sont sauvegardés (P=100%)
-            </div>
-            """, unsafe_allow_html=True)
-        
-        # Impact du backup sur le temps
-        mu_backup = st.slider("μ_backup (sauvegardes/min)", 10.0, 100.0, 50.0, key="backup_mu")
-        
-        # Nouveau calcul avec backup
-        # P_blank_with_backup = P(pas de backup) × P(rejet file 2)
-        # = (1 - p_backup) × P_K2 × (1 - P_K1)
-        P_blank_with_backup = (1 - P_K1) * P_K2 * (1 - p_backup)
-        
-        st.metric("Probabilité de backup", f"{p_backup:.0%}")
-        st.metric("✅ Nouvelle prob. page blanche", f"{P_blank_with_backup:.6%}")
-        
-        reduction = (P_blank_no_backup - P_blank_with_backup) / P_blank_no_backup * 100 if P_blank_no_backup > 0 else 0
-        st.metric("📉 Réduction", f"{reduction:.1f}%")
-        
-        # Temps de backup additionnel
-        T_backup = 1 / mu_backup
-        T_backup_moyen = p_backup * T_backup  # Temps moyen ajouté (pondéré par P)
-        st.metric("⏱️ Temps de backup moyen ajouté", f"{T_backup_moyen:.3f} min")
-        
-        # Formule explicative pour le backup aléatoire
-        if backup_mode == "Aléatoire (p variable)":
-            st.markdown(f"""
-            <div class="formula-box">
-            <strong>Formule (backup aléatoire):</strong><br>
-            P_blank = (1 - P_K₁) × P_K₂ × (1 - P)<br>
-            = {(1-P_K1):.4f} × {P_K2:.4f} × {(1-p_backup):.2f}<br>
-            = <strong>{P_blank_with_backup:.6f}</strong><br><br>
-            <em>T_backup_moyen = P × (1/μ_backup) = {p_backup:.2f} × {T_backup:.3f} = {T_backup_moyen:.4f} min</em>
-            </div>
-            """, unsafe_allow_html=True)
+    with col_config1:
+        lambda_rate = st.slider("λ - Taux d'arrivée (tags/min)", 10.0, 100.0, 40.0, key="backup_lambda")
+    
+    with col_config2:
+        n_customers = st.number_input("Nombre de clients", 100, 10000, 2000, step=100, key="backup_sim_n")
+    
+    with col_config3:
+        n_runs = st.number_input("Nombre de répétitions", 1, 20, 5, key="backup_sim_runs")
+    
+    mu_backup = 50.0  # Valeur fixe pour le taux de sauvegarde
     
     st.divider()
     
     # Section Simulation Monte Carlo avec Backup
-    st.subheader("🎲 Simulation Monte Carlo avec Backup")
+    st.subheader("🎲 Simulation Monte Carlo - Analyse de sensibilité du backup")
     
-    col_sim1, col_sim2 = st.columns([1, 2])
+    st.markdown("""
+    La simulation compare automatiquement 5 valeurs de probabilité de backup:
+    - **P=0%**: Aucun backup (référence)
+    - **P=25%**: Backup aléatoire faible
+    - **P=50%**: Backup aléatoire moyen
+    - **P=75%**: Backup aléatoire élevé
+    - **P=100%**: Backup systématique (optimal)
+    """)
     
-    with col_sim1:
-        n_customers = st.number_input("Nombre de clients", 100, 10000, 2000, step=100, key="backup_sim_n")
-        n_runs = st.number_input("Nombre de répétitions", 1, 20, 5, key="backup_sim_runs")
-        run_backup_sim = st.button("▶️ Lancer simulation avec Backup", type="primary", key="backup_sim_run")
+    run_backup_sim = st.button("▶️ Lancer simulation complète", type="primary", key="backup_sim_run", use_container_width=True)
     
-    with col_sim2:
-        if run_backup_sim:
-            with st.spinner("Simulation en cours..."):
-                results_no_backup = []
-                results_with_backup = []
-                
+    if run_backup_sim:
+        with st.spinner("Simulation en cours pour P = 0%, 25%, 50%, 75%, 100%..."):
+            # Valeurs de P à tester
+            p_values = [0.0, 0.25, 0.5, 0.75, 1.0]
+            all_results = {p: [] for p in p_values}
+            
+            # Exécuter les simulations pour chaque valeur de P
+            for p_val in p_values:
                 for run in range(n_runs):
-                    # Sans backup (p=0)
-                    res_no = simulate_waterfall_with_backup(
-                        lambda_rate, mu_rate1, mu_rate2, mu_backup,
-                        n_servers, K1, K2, n_customers, p_backup=0.0, seed=run
-                    )
-                    results_no_backup.append(res_no)
-                    
-                    # Avec backup
-                    res_with = simulate_waterfall_with_backup(
-                        lambda_rate, mu_rate1, mu_rate2, mu_backup,
-                        n_servers, K1, K2, n_customers, p_backup=p_backup, seed=run
-                    )
-                    results_with_backup.append(res_with)
-                
-                # Affichage des résultats
-                st.markdown("### 📊 Résultats de simulation")
-                
-                col_r1, col_r2 = st.columns(2)
-                
-                with col_r1:
-                    st.markdown("**Sans backup:**")
-                    avg_blank_no = np.mean([r['p_blank'] for r in results_no_backup])
-                    avg_lost_no = np.mean([r['n_lost'] for r in results_no_backup])
-                    avg_time_no = np.mean([r['total_system_mean'] for r in results_no_backup])
-                    
-                    st.metric("Taux pages blanches", f"{avg_blank_no:.4%}")
-                    st.metric("Clients perdus (moy.)", f"{avg_lost_no:.1f}")
-                    st.metric("Temps moyen système", f"{avg_time_no:.3f} min")
-                
-                with col_r2:
-                    st.markdown("**Avec backup:**")
-                    avg_blank_with = np.mean([r['p_blank'] for r in results_with_backup])
-                    avg_lost_with = np.mean([r['n_lost'] for r in results_with_backup])
-                    avg_recovered = np.mean([r['n_recovered_from_backup'] for r in results_with_backup])
-                    avg_time_with = np.mean([r['total_system_mean'] for r in results_with_backup])
-                    
-                    st.metric("Taux pages blanches", f"{avg_blank_with:.4%}")
-                    st.metric("Clients perdus (moy.)", f"{avg_lost_with:.1f}")
-                    st.metric("Récupérés du backup", f"{avg_recovered:.1f}")
-                    st.metric("Temps moyen système", f"{avg_time_with:.3f} min")
-                
-                # Comparaison graphique
-                fig_comp = make_subplots(rows=1, cols=2, 
-                    subplot_titles=['Taux de pages blanches', 'Temps moyen dans le système'])
-                
-                blanks_no = [r['p_blank'] * 100 for r in results_no_backup]
-                blanks_with = [r['p_blank'] * 100 for r in results_with_backup]
-                
-                fig_comp.add_trace(go.Box(y=blanks_no, name='Sans backup (P=0)', marker_color='red'), row=1, col=1)
-                fig_comp.add_trace(go.Box(y=blanks_with, name=f'Avec backup (P={p_backup:.0%})', marker_color='green'), row=1, col=1)
-                
-                times_no = [r['total_system_mean'] for r in results_no_backup]
-                times_with = [r['total_system_mean'] for r in results_with_backup]
-                
-                fig_comp.add_trace(go.Box(y=times_no, name='Sans backup', marker_color='red', showlegend=False), row=1, col=2)
-                fig_comp.add_trace(go.Box(y=times_with, name='Avec backup', marker_color='green', showlegend=False), row=1, col=2)
-                
-                fig_comp.update_yaxes(title_text="Pages blanches (%)", row=1, col=1)
-                fig_comp.update_yaxes(title_text="Temps (min)", row=1, col=2)
-                fig_comp.update_layout(height=400, showlegend=True)
-                
-                st.plotly_chart(apply_dark_theme(fig_comp), use_container_width=True)
-                
-                # Analyse de sensibilité: Impact de différentes valeurs de P
-                st.markdown("### 🎯 Analyse de sensibilité: Impact de P")
-                
-                p_values = [0.0, 0.25, 0.5, 0.75, 1.0]
-                sensitivity_results = []
-                
-                for p_val in p_values:
                     res = simulate_waterfall_with_backup(
                         lambda_rate, mu_rate1, mu_rate2, mu_backup,
-                        n_servers, K1, K2, n_customers, p_backup=p_val, seed=42
+                        n_servers, K1, K2, n_customers, p_backup=p_val, seed=run
                     )
-                    sensitivity_results.append({
-                        'P': p_val,
-                        'Pages blanches (%)': res['p_blank'] * 100,
-                        'Clients perdus': res['n_lost'],
-                        'Récupérés': res['n_recovered_from_backup'],
-                        'Sauvegardés': res['n_backed_up'],
-                        'Temps moyen (min)': res['total_system_mean']
-                    })
+                    all_results[p_val].append(res)
                 
-                df_sensitivity = pd.DataFrame(sensitivity_results)
-                st.dataframe(df_sensitivity, use_container_width=True)
+            # Affichage des résultats - Tableau comparatif
+            st.markdown("### 📊 Résultats comparatifs")
+            
+            # Créer le tableau de résultats
+            summary_data = []
+            for p_val in p_values:
+                results = all_results[p_val]
+                summary_data.append({
+                    'Probabilité P': f"{p_val:.0%}",
+                    'Pages blanches (%)': f"{np.mean([r['p_blank'] for r in results]) * 100:.3f}",
+                    'Clients perdus': f"{np.mean([r['n_lost'] for r in results]):.1f}",
+                    'Récupérés backup': f"{np.mean([r['n_recovered_from_backup'] for r in results]):.1f}",
+                    'Sauvegardés': f"{np.mean([r['n_backed_up'] for r in results]):.1f}",
+                    'Rejets File 1': f"{np.mean([r['n_rejected_f1'] for r in results]):.1f}",
+                    'Rejets File 2': f"{np.mean([r['n_rejected_f2'] for r in results]):.1f}",
+                    'Temps moyen (min)': f"{np.mean([r['total_system_mean'] for r in results]):.3f}",
+                    'Complétés': f"{np.mean([r['n_completed'] for r in results]):.1f}"
+                })
+            
+            df_summary = pd.DataFrame(summary_data)
+            
+            # Afficher le tableau avec style
+            st.dataframe(
+                df_summary,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            st.divider()
+            
+            # Graphiques de visualisation
+            st.markdown("### 📈 Visualisations comparatives")
+            
+            # Graphique 1: Pages blanches et clients perdus
+            col_g1, col_g2 = st.columns(2)
+            
+            with col_g1:
+                fig_blank = go.Figure()
+                blank_rates = [np.mean([r['p_blank'] for r in all_results[p]]) * 100 for p in p_values]
                 
-                # Graphique de sensibilité
-                fig_sens = make_subplots(rows=1, cols=2,
-                    subplot_titles=['Pages blanches vs P', 'Clients sauvegardés vs P'])
-                
-                fig_sens.add_trace(go.Scatter(
-                    x=df_sensitivity['P'], 
-                    y=df_sensitivity['Pages blanches (%)'],
+                fig_blank.add_trace(go.Scatter(
+                    x=[f"{p:.0%}" for p in p_values],
+                    y=blank_rates,
                     mode='lines+markers',
                     name='Pages blanches',
                     line=dict(color='#e74c3c', width=3),
-                    marker=dict(size=10)
-                ), row=1, col=1)
+                    marker=dict(size=12),
+                    fill='tozeroy'
+                ))
                 
-                fig_sens.add_trace(go.Scatter(
-                    x=df_sensitivity['P'], 
-                    y=df_sensitivity['Sauvegardés'],
+                fig_blank.update_layout(
+                    title="Impact de P sur les pages blanches",
+                    xaxis_title="Probabilité de backup (P)",
+                    yaxis_title="Pages blanches (%)",
+                    height=350
+                )
+                st.plotly_chart(apply_dark_theme(fig_blank), use_container_width=True)
+            
+            with col_g2:
+                fig_recovery = go.Figure()
+                
+                saved = [np.mean([r['n_backed_up'] for r in all_results[p]]) for p in p_values]
+                recovered = [np.mean([r['n_recovered_from_backup'] for r in all_results[p]]) for p in p_values]
+                lost = [np.mean([r['n_lost'] for r in all_results[p]]) for p in p_values]
+                
+                fig_recovery.add_trace(go.Scatter(
+                    x=[f"{p:.0%}" for p in p_values],
+                    y=saved,
                     mode='lines+markers',
                     name='Sauvegardés',
-                    line=dict(color='#f39c12', width=3),
+                    line=dict(color='#f39c12', width=2),
                     marker=dict(size=10)
-                ), row=1, col=2)
+                ))
                 
-                fig_sens.add_trace(go.Scatter(
-                    x=df_sensitivity['P'], 
-                    y=df_sensitivity['Récupérés'],
+                fig_recovery.add_trace(go.Scatter(
+                    x=[f"{p:.0%}" for p in p_values],
+                    y=recovered,
                     mode='lines+markers',
                     name='Récupérés du backup',
-                    line=dict(color='#27ae60', width=3),
+                    line=dict(color='#27ae60', width=2),
                     marker=dict(size=10)
+                ))
+                
+                fig_recovery.add_trace(go.Scatter(
+                    x=[f"{p:.0%}" for p in p_values],
+                    y=lost,
+                    mode='lines+markers',
+                    name='Perdus définitivement',
+                    line=dict(color='#c0392b', width=2),
+                    marker=dict(size=10)
+                ))
+                
+                fig_recovery.update_layout(
+                    title="Efficacité du mécanisme de backup",
+                    xaxis_title="Probabilité de backup (P)",
+                    yaxis_title="Nombre de clients",
+                    height=350
+                )
+                st.plotly_chart(apply_dark_theme(fig_recovery), use_container_width=True)
+            
+            st.divider()
+            
+            # Graphique 3: Box plots comparatifs (pleine largeur)
+            st.markdown("### 📦 Distribution des résultats")
+            
+            fig_boxes = make_subplots(
+                rows=1, cols=2,
+                subplot_titles=['Distribution des pages blanches (%)', 'Distribution des temps de séjour (min)']
+            )
+            
+            colors = ['#c0392b', '#e67e22', '#f39c12', '#27ae60', '#2ecc71']
+            
+            for i, p_val in enumerate(p_values):
+                results = all_results[p_val]
+                blanks = [r['p_blank'] * 100 for r in results]
+                times = [r['total_system_mean'] for r in results]
+                
+                fig_boxes.add_trace(go.Box(
+                    y=blanks,
+                    name=f"P={p_val:.0%}",
+                    marker_color=colors[i],
+                    showlegend=True
+                ), row=1, col=1)
+                
+                fig_boxes.add_trace(go.Box(
+                    y=times,
+                    name=f"P={p_val:.0%}",
+                    marker_color=colors[i],
+                    showlegend=False
                 ), row=1, col=2)
+            
+            fig_boxes.update_yaxes(title_text="Pages blanches (%)", row=1, col=1)
+            fig_boxes.update_yaxes(title_text="Temps (min)", row=1, col=2)
+            fig_boxes.update_layout(height=450, showlegend=True)
+            
+            st.plotly_chart(apply_dark_theme(fig_boxes), use_container_width=True)
+            
+            st.divider()
+            
+            # Graphique 4: Évolution temporelle (dernière simulation avec P=100%)
+            last_res = all_results[1.0][-1]  # Dernière simulation avec P=100%
+            if len(last_res['time_trace']) > 0:
+                st.markdown("### 📈 Évolution temporelle (simulation avec P=100%)")
                 
-                fig_sens.update_xaxes(title_text="Probabilité P", row=1, col=1)
-                fig_sens.update_xaxes(title_text="Probabilité P", row=1, col=2)
-                fig_sens.update_yaxes(title_text="Pages blanches (%)", row=1, col=1)
-                fig_sens.update_yaxes(title_text="Nombre de clients", row=1, col=2)
-                fig_sens.update_layout(height=350)
+                # Sous-échantillonnage si trop de points
+                max_points = 1000
+                step = max(1, len(last_res['time_trace']) // max_points)
                 
-                st.plotly_chart(apply_dark_theme(fig_sens), use_container_width=True)
+                fig_trace = make_subplots(
+                    rows=2, cols=1, 
+                    shared_xaxes=True,
+                    subplot_titles=['Taille des files d\'attente', 'Données en backup'],
+                    vertical_spacing=0.12
+                )
                 
-                # Trace temporelle de la dernière simulation
-                if len(results_with_backup) > 0:
-                    last_res = results_with_backup[-1]
-                    if len(last_res['time_trace']) > 0:
-                        st.markdown("### 📈 Évolution temporelle (dernière simulation)")
-                        
-                        # Sous-échantillonnage si trop de points
-                        max_points = 1000
-                        step = max(1, len(last_res['time_trace']) // max_points)
-                        
-                        fig_trace = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                            subplot_titles=['Taille des files', 'Données en backup'])
-                        
-                        fig_trace.add_trace(go.Scatter(
-                            x=last_res['time_trace'][::step], 
-                            y=last_res['f1_size_trace'][::step],
-                            name='File 1', line=dict(color='#3498db')
-                        ), row=1, col=1)
-                        
-                        fig_trace.add_trace(go.Scatter(
-                            x=last_res['time_trace'][::step], 
-                            y=last_res['f2_size_trace'][::step],
-                            name='File 2', line=dict(color='#9b59b6')
-                        ), row=1, col=1)
-                        
-                        fig_trace.add_trace(go.Scatter(
-                            x=last_res['time_trace'][::step], 
-                            y=last_res['backup_size_trace'][::step],
-                            name='Backup', line=dict(color='#f39c12'), fill='tozeroy'
-                        ), row=2, col=1)
-                        
-                        fig_trace.update_xaxes(title_text="Temps (min)", row=2, col=1)
-                        fig_trace.update_yaxes(title_text="Nb clients", row=1, col=1)
-                        fig_trace.update_yaxes(title_text="Nb en backup", row=2, col=1)
-                        fig_trace.update_layout(height=400)
-                        
-                        st.plotly_chart(apply_dark_theme(fig_trace), use_container_width=True)
+                fig_trace.add_trace(go.Scatter(
+                    x=last_res['time_trace'][::step], 
+                    y=last_res['f1_size_trace'][::step],
+                    name='File 1 (Moulinette)', 
+                    line=dict(color='#3498db', width=2)
+                ), row=1, col=1)
+                
+                fig_trace.add_trace(go.Scatter(
+                    x=last_res['time_trace'][::step], 
+                    y=last_res['f2_size_trace'][::step],
+                    name='File 2 (Envoi résultats)', 
+                    line=dict(color='#9b59b6', width=2)
+                ), row=1, col=1)
+                
+                fig_trace.add_trace(go.Scatter(
+                    x=last_res['time_trace'][::step], 
+                    y=last_res['backup_size_trace'][::step],
+                    name='Stockage backup', 
+                    line=dict(color='#f39c12', width=2),
+                    fill='tozeroy',
+                    fillcolor='rgba(243, 156, 18, 0.3)'
+                ), row=2, col=1)
+                
+                fig_trace.update_xaxes(title_text="Temps (min)", row=2, col=1)
+                fig_trace.update_yaxes(title_text="Nb clients en file", row=1, col=1)
+                fig_trace.update_yaxes(title_text="Nb en backup", row=2, col=1)
+                fig_trace.update_layout(height=500, showlegend=True)
+                
+                st.plotly_chart(apply_dark_theme(fig_trace), use_container_width=True)
     
     st.divider()
     
